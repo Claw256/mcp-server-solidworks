@@ -41,14 +41,8 @@ drawing-samples/
 
 scratch/
 
-# --- Vendored Debug build (project decision 2026-07-18) ---
-# Ship the compiled C# execution server so non-developers can run SolidPilot
-# without building it. Debug (not Release): the project is under active development
-# and each build is validated locally before push. Runtime *.log stays out.
-!execution/solidworks/SolidworksExecution/bin/
-execution/solidworks/SolidworksExecution/bin/*
-!execution/solidworks/SolidworksExecution/bin/Debug/
-!execution/solidworks/SolidworksExecution/bin/Debug/**
-execution/solidworks/SolidworksExecution/bin/Debug/*.log
+# Build output is no longer vendored: it must be built locally against the installed
+# SOLIDWORKS version (-p:SolidWorksApiDir=...), or a stale exe could be auto-started.
+# bin/ and obj/ are ignored by the [Bb]in/ and [Oo]bj/ rules above.
 
 
