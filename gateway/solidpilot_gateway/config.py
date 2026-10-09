@@ -55,6 +55,11 @@ class Settings:
     poll_wait: int = 25                  # seconds the agent's long-poll is held open
     allowed_hosts: list[str] = field(default_factory=list)
     allowed_origins: list[str] = field(default_factory=lambda: ["https://claude.ai", "https://claude.com"])
+    # File deliveries (deliver_document): private Vercel Blob, one-time links.
+    blob_token: str = ""                 # BLOB_READ_WRITE_TOKEN of a PRIVATE store; empty disables deliveries
+    delivery_ttl: int = 3600             # seconds a download link stays valid
+    delivery_max_bytes: int = 50 * 1024 * 1024
+    cron_secret: str = ""                # Vercel Cron sends it as a bearer token to /internal/sweep
 
     @property
     def mcp_url(self) -> str:
@@ -93,4 +98,8 @@ class Settings:
             call_timeout=float(_env("GATEWAY_CALL_TIMEOUT", "200")),
             allowed_hosts=[host, f"{host}:*"] if host else [],
             allowed_origins=_csv("GATEWAY_ALLOWED_ORIGINS") or ["https://claude.ai", "https://claude.com"],
+            blob_token=_env("BLOB_READ_WRITE_TOKEN"),
+            delivery_ttl=int(_env("GATEWAY_DELIVERY_TTL", "3600")),
+            delivery_max_bytes=int(_env("GATEWAY_DELIVERY_MAX_MB", "50")) * 1024 * 1024,
+            cron_secret=_env("CRON_SECRET"),
         )

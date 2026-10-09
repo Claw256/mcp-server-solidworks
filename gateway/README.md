@@ -74,6 +74,16 @@ The remote caller cannot touch the PC's disk, so the agent adds two tools:
 
 Both enforce an allow-list of extensions / folders and `AGENT_MAX_FILE_MB`. Results are capped at about 4 MB by the host's request-body limit (and Claude's own ~150k-character limit), so large exports will be refused with `RESULT_TOO_LARGE`. All other tools still take paths that exist **on the PC**.
 
+## Delivering finished documents (`deliver_document`)
+
+Files too big for a tool result (a `.sldprt`/`.sldasm`/`.slddrw` is often tens of MB) go through **private Vercel Blob** and come back as a **one-time download link**:
+
+1. Create a **private** Blob store (Vercel dashboard -> Storage -> Blob -> Private, or `vercel blob create-store <name> --access private`) and connect it to the project. Set `BLOB_READ_WRITE_TOKEN` (the integration injects it). Optional: `GATEWAY_DELIVERY_TTL` (seconds, default 3600), `GATEWAY_DELIVERY_MAX_MB` (default 50), `CRON_SECRET` (enables the daily `/internal/sweep` cron that deletes expired blobs; blobs are also swept on every new delivery). Without `BLOB_READ_WRITE_TOKEN` the tool answers `DELIVERY_UNAVAILABLE`.
+2. Claude calls `deliver_document` (no arguments = save and deliver the active document; `format` = export STEP/IGES/STL/PDF/DWG/DXF and deliver that; `file_path` = an existing file in the staging folder). The gateway binds the call to the caller's OAuth client and injects a secret slot id (hidden from the model's schema). The PC agent asks `/agent/upload-url` for a presigned PUT pinned to that exact size, content type and path, uploads **directly to Blob** (the bytes never touch a Vercel Function, so the 4.5 MB body limit does not apply), then calls `/agent/upload-complete`; the gateway checks the stored size and mints the link.
+3. The link `https://<domain>/dl/<token>` is 256-bit random (only its SHA-256 is stored), valid for one hour and **works exactly once**: the first request atomically burns it and is redirected (302, `no-store`) to a 60-second presigned Blob URL; every later or unknown request gets a generic 404, and repeated misses from one IP are locked out. The blob is deleted shortly after use or at expiry.
+
+The link is the credential, so it is only ever returned inside the chat that asked for it. Whether the Claude client lets its code sandbox reach the gateway domain is outside this server's control; opening the link in a browser always works. Blob URL signing follows `@vercel/blob`'s scheme (the Python SDK has none) and is pinned by golden vectors in `tests/test_blobstore.py`.
+
 ## Security model
 
 * Only the owner secret grants user tokens; 5 wrong attempts lock the sign-in (shared across instances) for an increasing delay. Tokens, codes and refresh tokens are stored only as SHA-256 digests; codes and refresh tokens are redeemed atomically, so a replay fails.

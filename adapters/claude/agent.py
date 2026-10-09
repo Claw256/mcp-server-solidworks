@@ -10,6 +10,7 @@ C# execution layer is still reached over http://localhost:5000 exactly as before
 """
 import asyncio
 import base64
+import hashlib
 import json
 import mimetypes
 import os
@@ -171,7 +172,106 @@ def get_file(file_path: str) -> list:
     return [note, EmbeddedResource(type="resource", resource=blob)]
 
 
-sw_server._normalize_tool_surface()   # re-run so the two tools above get the same schema cleanup
+_GATEWAY: "Gateway | None" = None     # set once the agent is connected; deliver_document talks to the gateway through it
+DELIVER_MAX_BYTES = int(os.getenv("AGENT_DELIVER_MAX_MB", "50")) * 1024 * 1024
+_EXPORT_EXT = {"STEP": ".step", "IGES": ".igs", "STL": ".stl", "PDF": ".pdf", "DWG": ".dwg", "DXF": ".dxf"}
+_NATIVE_EXT = {"PART": ".sldprt", "ASSEMBLY": ".sldasm", "DRAWING": ".slddrw"}
+
+
+def _read_and_hash(path: str) -> tuple[bytes, str]:
+    with open(path, "rb") as fh:
+        data = fh.read()
+    return data, hashlib.sha256(data).hexdigest()
+
+
+async def _gateway_json(path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    assert _GATEWAY is not None
+    resp = await _GATEWAY.post(path, payload, timeout=30)
+    try:
+        body = resp.json()
+    except ValueError:
+        body = {}
+    if resp.status_code >= 300:
+        code = body.get("error", f"HTTP_{resp.status_code}")
+        if code == "DELIVERY_UNAVAILABLE":
+            raise ToolError("DELIVERY_UNAVAILABLE: the gateway has no file storage configured (BLOB_READ_WRITE_TOKEN).")
+        raise ToolError(f"{code}: {body.get('message', 'the gateway refused the delivery')}")
+    return body
+
+
+@mcp.tool(structured_output=False)
+async def deliver_document(file_path: str = "", format: str = "", delivery_slot: str = "") -> str:
+    """Give the user a finished SolidWorks file as a secure, one-time download link (up to 50 MB).
+
+    Use this when the user wants the actual file (a part, assembly, drawing or export) rather than a picture.
+    It uploads straight from the PC to private storage; nothing passes through this chat, so size is no
+    problem. Hand the returned link to the user as-is: it works ONCE, for about an hour.
+
+    With no arguments the ACTIVE document is saved in place and delivered (.sldprt/.sldasm/.slddrw; a
+    never-saved document must be saved first with save_document).
+    format: STEP | IGES | STL | PDF | DWG | DXF - export the active document to that format and deliver the export.
+    file_path: deliver an existing file instead (only from the staging folder or the PC owner's allowed folders,
+        e.g. an export or an image you just wrote there).
+    """
+    if _GATEWAY is None or not delivery_slot:
+        raise ToolError("DELIVERY_UNAVAILABLE: deliver_document only works through the SolidPilot gateway connector.")
+    fmt = format.strip().upper()
+    if fmt and fmt not in _EXPORT_EXT:
+        raise ToolError(f"INVALID_PARAMETER: format must be one of {', '.join(_EXPORT_EXT)}")
+    temp_copy = ""
+    try:
+        if fmt:
+            state = sw_server._call_raw("verify_state", {})
+            title = ((state.get("cadState") or {}).get("activeDocument") or "document")
+            name = _safe_name(os.path.splitext(title)[0] or "document") + _EXPORT_EXT[fmt]
+            os.makedirs(STAGING_DIR, exist_ok=True)
+            _sweep_staging()
+            temp_copy = path = os.path.join(STAGING_DIR, f"deliver-{delivery_slot[:8]}-{name}")
+            r = sw_server._call_raw("export_document", {"format": fmt, "file_path": path})
+            if r.get("status") != "COMPLETED":
+                err = r.get("error") or {}
+                raise ToolError(f"EXPORT_FAILED: {err.get('code')}: {err.get('message')}")
+            filename = name
+        elif file_path:
+            path = os.path.abspath(file_path)
+            if not _inside_allowed_root(path):
+                raise ToolError(f"FORBIDDEN_PATH: only files under {STAGING_DIR} (or the owner's allowed folders) can be delivered")
+            filename = os.path.basename(path)
+        else:
+            r = sw_server._call_raw("save_document", {"file_path": ""})   # in place; the path comes from SolidWorks itself
+            if r.get("status") != "COMPLETED":
+                err = r.get("error") or {}
+                raise ToolError(f"SAVE_FAILED: {err.get('code')}: {err.get('message')}")
+            saved = ((r.get("cadState") or {}).get("features") or [""])[0]
+            path = os.path.abspath(saved) if saved else ""
+            filename = os.path.basename(path)
+        if not path or not os.path.isfile(path):
+            raise ToolError(f"NOT_FOUND: {path or 'the document has no file on disk'}")
+        size = os.path.getsize(path)
+        if size > DELIVER_MAX_BYTES:
+            raise ToolError(f"FILE_TOO_LARGE: {size} bytes exceeds the {DELIVER_MAX_BYTES} byte delivery limit")
+        try:
+            data, sha = await asyncio.to_thread(_read_and_hash, path)
+        except OSError as exc:
+            raise ToolError(f"READ_FAILED: {exc}") from exc
+        slot = await _gateway_json("/agent/upload-url", {"slot": delivery_slot, "filename": filename, "size": len(data)})
+        put = await _GATEWAY.client.put(slot["url"], content=data, headers=slot["headers"], timeout=600)
+        if put.status_code >= 300:
+            raise ToolError(f"UPLOAD_FAILED: storage answered HTTP {put.status_code}")
+        done = await _gateway_json("/agent/upload-complete", {"slot": delivery_slot, "size": len(data)})
+        mins = max(1, int(done["expires_in"]) // 60)
+        return (f"Delivered {done['filename']} ({done['size']} bytes, sha256 {sha}).\n"
+                f"Download link (works once, expires in {mins} minutes): {done['download_url']}\n"
+                "Give this link to the user exactly as written; it cannot be reused once opened.")
+    finally:
+        if temp_copy:
+            try:
+                os.remove(temp_copy)
+            except OSError:
+                pass
+
+
+sw_server._normalize_tool_surface()   # re-run so the tools above get the same schema cleanup
 
 
 # ---------------------------------------------------------------------------------------------
@@ -305,6 +405,8 @@ async def _respond(gw: Gateway, job: dict[str, Any]) -> None:
 
 async def poll_forever(gw: Gateway) -> None:
     """Push the catalogue, then long-poll. Returns only by raising, so main() can back off and retry."""
+    global _GATEWAY
+    _GATEWAY = gw
     resp = await gw.post("/agent/catalog", await build_catalog(), timeout=60)
     resp.raise_for_status()
     log("connected to gateway; catalogue pushed")

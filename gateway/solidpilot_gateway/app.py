@@ -2,6 +2,7 @@
 
 import base64
 import contextlib
+import hmac
 import html
 import logging
 from urllib.parse import unquote
@@ -13,7 +14,9 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Mount, Route
 
+from .blobstore import BlobBackend, VercelBlob
 from .config import AGENT_SCOPE, USER_SCOPE, Settings
+from .deliveries import Deliveries, DeliveryError
 from .provider import OwnerProvider
 from .relay import PROTOCOL, AgentRelay
 from .store import Store, connect
@@ -37,10 +40,14 @@ _NOSTORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 _CATALOG_KEYS = ("tools", "resources", "templates", "prompts")
 
 
-def create_app(settings: Settings, redis=None) -> Starlette:
+def create_app(settings: Settings, redis=None, blob: BlobBackend | None = None) -> Starlette:
     store = Store(redis if redis is not None else connect(settings.redis_url))
     provider = OwnerProvider(settings, store)
     relay = AgentRelay(store.redis, settings.call_timeout)
+    if blob is None and settings.blob_token:
+        blob = VercelBlob(settings.blob_token)
+    deliveries = (Deliveries(store, blob, settings.public_url, settings.delivery_ttl, settings.delivery_max_bytes)
+                  if blob is not None else None)
 
     if settings.is_local:
         hosts = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
@@ -52,6 +59,7 @@ def create_app(settings: Settings, redis=None) -> Starlette:
 
     mcp = RelayServer(
         relay,
+        deliveries,
         name="solidpilot-gateway",
         instructions="SolidWorks CAD tools, executed on the user's own PC through a connected agent.",
         auth=AuthSettings(
@@ -173,6 +181,65 @@ def create_app(settings: Settings, redis=None) -> Starlette:
         await relay.touch(request.headers.get("x-agent-version", ""))
         return Response(status_code=204, headers=_NOSTORE)
 
+    # ----- file deliveries ----------------------------------------------------------------------
+    async def agent_upload_url(request: Request) -> Response:
+        if not await _agent_authorized(request):
+            return _unauthorized()
+        if deliveries is None:
+            return JSONResponse({"error": "DELIVERY_UNAVAILABLE"}, status_code=501, headers=_NOSTORE)
+        try:
+            body = await request.json()
+            result = await deliveries.request_upload(str(body.get("slot", "")), str(body.get("filename", "")),
+                                                     body.get("size"))
+        except DeliveryError as e:
+            return JSONResponse({"error": e.code, "message": str(e)}, status_code=400, headers=_NOSTORE)
+        except (ValueError, AttributeError):
+            return JSONResponse({"error": "invalid_request"}, status_code=400, headers=_NOSTORE)
+        return JSONResponse(result, headers=_NOSTORE)
+
+    async def agent_upload_complete(request: Request) -> Response:
+        if not await _agent_authorized(request):
+            return _unauthorized()
+        if deliveries is None:
+            return JSONResponse({"error": "DELIVERY_UNAVAILABLE"}, status_code=501, headers=_NOSTORE)
+        try:
+            body = await request.json()
+            size = body.get("size")
+            if not isinstance(size, int) or isinstance(size, bool):
+                raise ValueError
+            result = await deliveries.complete(str(body.get("slot", "")), size)
+        except DeliveryError as e:
+            return JSONResponse({"error": e.code, "message": str(e)}, status_code=400, headers=_NOSTORE)
+        except (ValueError, AttributeError):
+            return JSONResponse({"error": "invalid_request"}, status_code=400, headers=_NOSTORE)
+        return JSONResponse(result, headers=_NOSTORE)
+
+    def _client_ip(request: Request) -> str:
+        fwd = request.headers.get("x-forwarded-for", "")
+        return (fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "?")) or "?"
+
+    async def download(request: Request) -> Response:
+        """The link itself is the credential: 256-bit, single use, 1 h. Every miss looks the same."""
+        miss = Response("Not found", status_code=404, headers=_HEADERS)
+        if deliveries is None:
+            return miss
+        ip = _client_ip(request)
+        if await store.is_locked(f"dl:{ip}"):
+            return Response("Too many attempts.", status_code=429, headers=_HEADERS)
+        url = await deliveries.redeem(request.path_params["token"])
+        if url is None:
+            if await store.bump(f"dlfail:{ip}", window=600) >= 20:
+                await store.lock(f"dl:{ip}", 600)
+            return miss
+        return Response(status_code=302, headers={**_HEADERS, "Location": url})
+
+    async def internal_sweep(request: Request) -> Response:
+        auth = request.headers.get("authorization", "")
+        ok = bool(settings.cron_secret) and hmac.compare_digest(auth.encode(), f"Bearer {settings.cron_secret}".encode())
+        if not ok or deliveries is None:
+            return Response("Not found", status_code=404)
+        return JSONResponse({"deleted": await deliveries.sweep()}, headers=_NOSTORE)
+
     async def health(request: Request) -> JSONResponse:
         return JSONResponse({"ok": True, "agent_connected": await relay.connected()})
 
@@ -190,6 +257,10 @@ def create_app(settings: Settings, redis=None) -> Starlette:
             Route("/agent/poll", agent_poll, methods=["POST"]),
             Route("/agent/result", agent_result, methods=["POST"]),
             Route("/agent/catalog", agent_catalog, methods=["POST"]),
+            Route("/agent/upload-url", agent_upload_url, methods=["POST"]),
+            Route("/agent/upload-complete", agent_upload_complete, methods=["POST"]),
+            Route("/dl/{token}", download, methods=["GET"]),
+            Route("/internal/sweep", internal_sweep, methods=["GET"]),
             Mount("/", app=mcp_app),  # must stay last: it matches every path
         ],
         lifespan=lifespan,
@@ -197,4 +268,5 @@ def create_app(settings: Settings, redis=None) -> Starlette:
     app.state.relay = relay
     app.state.provider = provider
     app.state.store = store
+    app.state.deliveries = deliveries
     return app
