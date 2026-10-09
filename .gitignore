@@ -56,3 +56,12 @@ examples/*-rebuild/
 *.slddrw2dxf.dxf
 *.analysis-v*.json
 .solidpilot/
+
+# Remote gateway: secrets and runtime state
+gateway/.env
+gateway/.env.*
+!gateway/.env.example
+gateway/.vercel/
+adapters/claude/.env
+adapters/claude/.agent-secrets*
+.pytest_cache/

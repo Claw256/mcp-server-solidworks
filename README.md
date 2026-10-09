@@ -244,6 +244,10 @@ Update the path to match your own system.
 
 > Because MCP is an open standard, OpenClaw, OpenAI-based agents, or clients running a local LLM can connect the same way by pointing to the same `server.py` adapter.
 
+### Remote access (Claude on the web and mobile)
+
+To use SolidPilot from the Claude mobile app, run a small **gateway** on a public HTTPS host and let the SolidWorks PC call *out* to it with `adapters/claude/agent.py`. The PC exposes no inbound port; SolidWorks, the C# execution layer and all file access stay on the PC. The gateway runs on Vercel with an Upstash Redis; setup, security model and troubleshooting are in [gateway/README.md](gateway/README.md).
+
 ---
 
 ## Project Status

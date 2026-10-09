@@ -1,0 +1,6 @@
+-r requirements.txt
+-r ../adapters/claude/requirements.txt   # the integration test runs the real agent
+uvicorn>=0.30        # local run (python -m solidpilot_gateway) and the tests
+pytest>=8.0.0
+pytest-asyncio>=0.23
+fakeredis>=2.26
