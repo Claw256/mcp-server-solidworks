@@ -147,9 +147,95 @@ def to_mm(points):
     return points / _PT_PER_MM
 
 
+def bmp_size(data):
+    """(width, height) in pixels from a BMP header (height is always positive)."""
+    import struct
+    if data[:2] != b"BM" or len(data) < 26:
+        raise ValueError("not a BMP file")
+    w, h = struct.unpack_from("<ii", data, 18)
+    return w, abs(h)
+
+
+# The relay (gateway host) rejects request bodies over ~4.5 MB; agent.MAX_RESULT_BYTES mirrors this value.
+RELAY_MAX_BYTES = 4 * 1024 * 1024
+_JSON_HEADROOM = 64 * 1024          # envelope, notes and the text parts around the base64 image data
+
+
+def max_png_bytes(n_images=1):
+    """Largest PNG (raw bytes) that still fits the relay cap once base64-encoded, per image when
+    `n_images` images share one result."""
+    return max(0, (RELAY_MAX_BYTES - _JSON_HEADROOM) // max(1, n_images) // 4 * 3)
+
+
+def fit_scale(png_len, n_images=1):
+    """Linear scale (<= 1) to apply to a render's width/height so its PNG should fit `max_png_bytes`.
+    PNG size grows roughly with pixel count; the 0.95 factor leaves slack for content differences."""
+    budget = max_png_bytes(n_images)
+    if png_len <= budget:
+        return 1.0
+    return max(0.05, math.sqrt(budget / png_len) * 0.95)
+
+
+def _rep(pattern, n):
+    return int.from_bytes(bytes(pattern) * n, "little")
+
+
+def _swar_consts(n):
+    """Per-row-length constants for the big-int (SWAR) PNG filters (n = bytes per row)."""
+    return {
+        "H8": _rep([0x80], n), "L8": _rep([0x7F], n), "M8": (1 << (8 * n)) - 1,
+        "H16": _rep([0x00, 0x80], n), "L16": _rep([0xFF, 0x7F], n), "B16": _rep([0xFF, 0x00], n), "K16": _rep([0x00, 0x01], n),
+        "F16": (1 << (16 * n)) - 1,
+    }
+
+
+def _sub8(x, y, k):
+    """Byte-wise (x - y) mod 256 on big ints, no borrow between bytes."""
+    return ((x | k["H8"]) - (y & k["L8"])) ^ ((x ^ ~y) & k["H8"])
+
+
+def _absdiff16(x, y, k):
+    """Lane-wise |x - y| for 16-bit lanes holding values < 0x8000."""
+    t = (x | k["H16"]) - y                       # (x - y) + 0x8000 per lane, never borrows across lanes
+    m = ((t & k["H16"]) >> 15) * 0xFFFF          # full-lane mask where x >= y
+    lt = k["F16"] ^ m
+    return (t & m & k["L16"]) | ((k["H16"] - (t & lt)) & lt)
+
+
+def _le16(x, y, k):
+    """Full-lane mask where x <= y (16-bit lanes, values < 0x8000)."""
+    return ((((y | k["H16"]) - x) & k["H16"]) >> 15) * 0xFFFF
+
+
+def _widen(b, n):
+    buf = bytearray(2 * n)
+    buf[0::2] = b
+    return int.from_bytes(buf, "little")
+
+
+def _paeth_residual(x16, a16, b16, c16, k, n):
+    """Paeth-filtered row bytes. a/b/c are the left / up / up-left ORIGINAL pixels, so every byte
+    of the row can be computed at once."""
+    pa = _absdiff16(b16, c16, k)
+    pb = _absdiff16(a16, c16, k)
+    pc = _absdiff16(a16 + b16, c16 << 1, k)
+    m_a = _le16(pa, pb, k) & _le16(pa, pc, k)
+    m_b = _le16(pb, pc, k) & (k["F16"] ^ m_a)
+    pred = (a16 & m_a) | (b16 & m_b) | (c16 & (k["F16"] ^ (m_a | m_b)))
+    res = ((x16 + k["K16"]) - pred) & k["B16"]      # (x - pred) mod 256 per lane
+    return res.to_bytes(2 * n, "little")[0::2]
+
+
+_MIN_FILTER_WIDTH = 8
+
+
 def bmp_to_png(data):
     """Uncompressed 24/32-bit BMP bytes -> PNG bytes (stdlib only). SolidWorks' SaveBMP writes BMP,
-    but Claude accepts only JPEG/PNG/GIF/WebP, and a Pillow dependency just for this is not worth it."""
+    but Claude accepts only JPEG/PNG/GIF/WebP, and a Pillow dependency just for this is not worth it.
+
+    Each row gets whichever PNG filter (None/Sub/Up/Paeth) has the smallest sum of absolute
+    residuals, then zlib level 9. The filters run as big-int (SWAR) byte arithmetic on whole rows --
+    no per-pixel Python loops -- so a 4096x3072 view converts in seconds."""
     import struct
     import zlib
     if data[:2] != b"BM":
@@ -160,25 +246,49 @@ def bmp_to_png(data):
         raise ValueError("unsupported BMP (bpp=%s, compression=%s); need uncompressed 24/32-bit" % (bpp, comp))
     top_down = h < 0
     h = abs(h)
+    if w <= 0 or h <= 0:
+        raise ValueError("empty BMP")
     stride = ((w * bpp + 31) // 32) * 4
     step = bpp // 8
-    rows = []
+    if len(data) < off + stride * h:
+        raise ValueError("truncated BMP (%d bytes, need %d)" % (len(data), off + stride * h))
+    n = w * 3
+    k = _swar_consts(n)
+    cost = bytes(v if v < 128 else 256 - v for v in range(256))     # |signed byte|
+    z = zlib.compressobj(9)
+    out = []
+    prev_i, prev16 = 0, 0
     for y in range(h):
         src = off + (y if top_down else h - 1 - y) * stride
-        row = bytearray(1 + w * 3)
         px = data[src:src + w * step]
-        row[1::3] = px[2::step]      # R (BMP is BGR)
-        row[2::3] = px[1::step]      # G
-        row[3::3] = px[0::step]      # B
-        rows.append(bytes(row))
-    raw = b"".join(rows)
+        row = bytearray(n)
+        row[0::3] = px[2::step]      # R (BMP is BGR)
+        row[1::3] = px[1::step]      # G
+        row[2::3] = px[0::step]      # B
+        row = bytes(row)
+        if w < _MIN_FILTER_WIDTH:        # thumbnails gain nothing from filtering; stay plain (filter 0)
+            out.append(z.compress(b"\x00" + row))
+            continue
+        cur = int.from_bytes(row, "little")
+        cur16 = _widen(row, n)
+        sub =_sub8(cur, (cur << 24) & k["M8"], k).to_bytes(n, "little")     # left pixel is 3 bytes back
+        cands = [(sum(row.translate(cost)), 0, row), (sum(sub.translate(cost)), 1, sub)]
+        if y:
+            up = _sub8(cur, prev_i, k).to_bytes(n, "little")
+            cands.append((sum(up.translate(cost)), 2, up))
+            pa = _paeth_residual(cur16, (cur16 << 48) & k["F16"], prev16, (prev16 << 48) & k["F16"], k, n)
+            cands.append((sum(pa.translate(cost)), 4, pa))
+        _score, ftype, body = min(cands, key=lambda c: c[0])
+        out.append(z.compress(bytes((ftype,)) + body))
+        prev_i, prev16 = cur, cur16
+    out.append(z.flush())
 
     def chunk(tag, body):
         c = struct.pack(">I", len(body)) + tag + body
         return c + struct.pack(">I", zlib.crc32(tag + body) & 0xFFFFFFFF)
 
     return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
-            + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
+            + chunk(b"IDAT", b"".join(out)) + chunk(b"IEND", b""))
 
 
 def parse_marks(marks):

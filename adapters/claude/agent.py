@@ -27,6 +27,7 @@ from mcp_types import BlobResourceContents, CallToolResult, EmbeddedResource, Te
 
 import adapter_log
 import config  # noqa: F401  (loads adapters/claude/.env)
+import drawing_prep as dp
 import server as sw_server
 
 PROTOCOL = 1
@@ -114,12 +115,28 @@ def stage_file(filename: str, content_base64: str) -> str:
     return f"Staged {len(data)} bytes at {path}"
 
 
+def _check_relay_budget(what: str, raw_len: int, width: int = 0, height: int = 0) -> None:
+    """Fail clearly NOW if `raw_len` bytes would exceed the relay cap once base64-encoded (instead of
+    letting _respond drop the whole result later)."""
+    if raw_len <= dp.max_png_bytes(1):
+        return
+    b64_len = (raw_len + 2) // 3 * 4
+    hint = ""
+    if width and height:
+        s = dp.fit_scale(raw_len)
+        hint = f"; the largest resolution likely to fit is about {int(width * s)}x{int(height * s)} px (re-export at that size)"
+    raise ToolError(f"RESULT_TOO_LARGE: {what} is {raw_len} bytes ({b64_len} base64), over the "
+                    f"{MAX_RESULT_BYTES} byte relay limit{hint}")
+
+
 @mcp.tool(structured_output=False)
 def get_file(file_path: str) -> list:
     """Fetch a file from the SolidWorks PC's staging folder (for example an exported PDF, STEP or image).
 
     Only files inside the staging folder (plus any folders the PC owner allows) can be read. Export
     there first with export_document / export_image, then call this to receive the bytes.
+    BMP images are converted to PNG. A result over the relay's ~4 MB limit is refused with the
+    largest resolution likely to fit (export_image with file_path writes a .png sibling to fetch).
     """
     path = os.path.abspath(file_path)
     if not _inside_allowed_root(path):
@@ -131,11 +148,25 @@ def get_file(file_path: str) -> list:
         raise ToolError(f"FILE_TOO_LARGE: {size} bytes exceeds the {MAX_FILE_BYTES} byte limit")
     with open(path, "rb") as fh:
         data = fh.read()
+    name = os.path.basename(path)
     mime = mimetypes.guess_type(path)[0] or "application/octet-stream"
-    note = TextContent(type="text", text=f"{os.path.basename(path)} ({size} bytes, {mime})")
+    if data[:2] == b"BM" and (mime in ("image/bmp", "image/x-ms-bmp") or path.lower().endswith(".bmp")):
+        # Claude rejects BMP, so hand it over as PNG (what export_image's .png sibling already is)
+        try:
+            png = dp.bmp_to_png(data)
+            w, h = dp.bmp_size(data)
+        except ValueError as e:
+            raise ToolError(f"INVALID_IMAGE: {name} could not be converted to PNG: {e}") from e
+        _check_relay_budget(name + " (as PNG)", len(png), w, h)
+        note = TextContent(type="text", text=f"{name} converted BMP -> PNG, {w}x{h} px ({len(png)} bytes)")
+        return [note, Image(data=png, format="png")]
+    if mime == "image/bmp" or path.lower().endswith(".bmp"):
+        raise ToolError(f"INVALID_IMAGE: {name} is not a valid BMP file (missing 'BM' header)")
+    _check_relay_budget(name, len(data))
+    note = TextContent(type="text", text=f"{name} ({size} bytes, {mime})")
     if mime in ("image/png", "image/jpeg"):
         return [note, Image(data=data, format=mime.split("/")[1])]
-    uri = "file:///" + os.path.basename(path).replace(" ", "%20")
+    uri = "file:///" + name.replace(" ", "%20")
     blob = BlobResourceContents(uri=uri, mime_type=mime, blob=base64.b64encode(data).decode())
     return [note, EmbeddedResource(type="resource", resource=blob)]
 
