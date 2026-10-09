@@ -15,8 +15,11 @@ def digest(value: str) -> str:
 
 
 def connect(url: str) -> "aioredis.Redis":
-    # No socket timeout: the relay holds BLPOP open for tens of seconds. Upstash needs TLS (rediss://).
-    return aioredis.from_url(url, decode_responses=True, socket_connect_timeout=5, health_check_interval=30)
+    # BLPOP is held open for up to poll_wait (25 s) / SLICE (10 s), so the socket read timeout must exceed that.
+    # redis-py 8 defaults socket_timeout to 5 s, which would abort every blocking pop; set it explicitly.
+    # Upstash needs TLS (rediss://).
+    return aioredis.from_url(url, decode_responses=True, socket_connect_timeout=5, socket_timeout=40,
+                             socket_keepalive=True, health_check_interval=30)
 
 
 class Store:
