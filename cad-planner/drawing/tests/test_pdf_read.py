@@ -211,6 +211,64 @@ def test_scan_like_page_is_refused():
             raise AssertionError("a page without vector geometry must be refused")
 
 
+def _two_pen_drawing(path):
+    """A CAD-style page: the 100 x 50 plate (+ a Ø10 hole and a tangent-edge double line hugging the outline) in the
+    HEAVY pen (0.18 mm), and 'outlined text' glyph strokes + a dimension line in the THIN pen (0.08 mm)."""
+    doc = fitz.open()
+    page = doc.new_page(width=_m(420), height=_m(297))
+    heavy, thin = 0.18 * 72 / 25.4, 0.08 * 72 / 25.4
+    page.draw_rect(fitz.Rect(_m(10), _m(10), _m(410), _m(287)), width=0.42 * 72 / 25.4)      # sheet border
+    page.draw_rect(fitz.Rect(_m(100), _m(100), _m(200), _m(150)), width=heavy)                # plate outline
+    page.draw_rect(fitz.Rect(_m(100.6), _m(100.6), _m(199.4), _m(149.4)), width=heavy)        # tangent-edge line
+    page.draw_circle(fitz.Point(_m(150), _m(125)), _m(5), width=heavy)
+    page.draw_circle(fitz.Point(_m(120), _m(125)), _m(3), width=heavy)
+    page.draw_circle(fitz.Point(_m(180), _m(125)), _m(3), width=heavy)
+    for i in range(40):                                                                       # glyph-like clutter
+        x = 100 + 2.0 * i
+        page.draw_line(fitz.Point(_m(x), _m(160)), fitz.Point(_m(x + 0.8), _m(163)), width=thin)
+        page.draw_line(fitz.Point(_m(x + 0.8), _m(163)), fitz.Point(_m(x + 1.6), _m(160)), width=thin)
+    page.draw_line(fitz.Point(_m(100), _m(158)), fitz.Point(_m(200), _m(158)), width=thin)
+    doc.save(path)
+    doc.close()
+
+
+def test_pen_filter_removes_dimension_clutter_and_suggests_the_part_pen():
+    if not HAVE:
+        print("     (skipped: PyMuPDF / ezdxf not installed)")
+        return
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
+        p = os.path.join(d, "twopen.pdf")
+        _two_pen_drawing(p)
+        cfg = drawing.load_config()
+        mixed = drawing.read_pdf(p, cfg)
+        pdf = mixed["sheet"]["pdf"]
+        assert pdf["pen_used_mm"] is None and pdf["pen_suggested_mm"] == 0.18, pdf["pens"]
+        clean = drawing.read_pdf(p, cfg, pen_mm=0.18)
+        views = [v for v in clean["views"] if max(v["size"]) > 20]
+        assert len(views) == 1 and abs(views[0]["size"][0] - 100.0) < 0.2 and abs(views[0]["size"][1] - 50.0) < 0.2, \
+            [v["size"] for v in clean["views"]]
+        assert clean["sheet"]["pdf"]["pen_used_mm"] == 0.18
+
+
+def test_silhouette_ignores_tangent_lines_and_interior_detail():
+    if not HAVE:
+        print("     (skipped: PyMuPDF / ezdxf not installed)")
+        return
+    from drawing import silhouette
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
+        p = os.path.join(d, "twopen.pdf")
+        _two_pen_drawing(p)
+        pdf = fitz.open(p)
+        page = pdf[0]
+        K = 25.4 / 72.0
+        r = silhouette.view_silhouette(fitz, page, (_m(95) / 1.0, _m(95), _m(205), _m(155)), 0.18)
+        pdf.close()
+        assert r is not None
+        w, h = r["size_mm"]
+        assert abs(w - 100.0) < 0.4 and abs(h - 50.0) < 0.4, r["size_mm"]
+        assert 4 <= len(r["polygon"]) <= 12, len(r["polygon"])         # a rectangle, not a ring of detail
+
+
 _TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
 
 if __name__ == "__main__":

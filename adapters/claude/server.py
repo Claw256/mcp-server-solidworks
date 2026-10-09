@@ -1129,6 +1129,13 @@ def _advisories(art) -> str:
             out.append("pdf scale ASSUMED 1:1 — no scale text was found; every length below is wrong by the "
                        "true ratio unless the drawing really is 1:1. Read the title block and re-run with "
                        "scale='1:N'.")
+        heavy = [p for p in (pdf.get("pens") or []) if p.get("primitives", 0) >= 50]
+        if pdf.get("pen_used_mm") is None and len(heavy) > 1:
+            sug = pdf.get("pen_suggested_mm")
+            out.append("pdf pens x%d (sheet.pdf.pens) — every pen was read as part geometry, so dimension lines, "
+                       "outlined text and the title-block grid probably formed junk views. Re-run with "
+                       "pen_mm=%s%s." % (len(heavy), sug if sug else "<the part pen>",
+                                         " (the arc-richest pen)" if sug else ""))
         if pdf.get("unassigned_numbers"):
             out.append("pdf unassigned_numbers x%d (sheet.pdf) — numbers the reader could not tie to a "
                        "dimension; read them from the page with vision (prepare_drawing) before building."
@@ -1206,7 +1213,7 @@ def _wire_json(obj) -> str:
 @mcp.tool(structured_output=False)
 def analyze_drawing(file_path: str, save_analysis: bool = True,
                     mode: Literal["auto", "ir", "build"] = "auto", layout: str = "",
-                    page: int = 1, scale: str = "") -> str:
+                    page: int = 1, scale: str = "", pen_mm: float = 0.0) -> str:
     """Read a 2D technical drawing — **.DXF, .DWG, a native .SLDDRW, or a VECTOR .PDF** — and either BUILD the part
     from it or hand you the evidence to build it yourself. This is the drawing→part front end: start
     here for ANY "build the part from this drawing" job. A .DWG or .SLDDRW is opened in SolidWorks and
@@ -1335,7 +1342,11 @@ def analyze_drawing(file_path: str, save_analysis: bool = True,
         text inside note blocks included.
 
     file_path: absolute path to the .DXF, .DWG, .SLDDRW or .PDF.
-    page / scale: PDF only. page is 1-based; scale like '1:2' (paper:true) overrides the title-block text.
+    page / scale / pen_mm: PDF only. page is 1-based; scale like '1:2' (paper:true) overrides the title-block text.
+        pen_mm: keep ONLY that stroke width as part geometry. CAD PDFs draw the part with one pen and the dimensions,
+        outlined text, centre lines and title-block grid with others; with every pen mixed in, dimension glyphs
+        cluster into dozens of junk "views". sheet.pdf.pens lists each pen (primitives, arcs/circles) and
+        pen_suggested_mm names the arc-richest one (usually the part) — re-run with pen_mm=<that>.
     layout: DXF layout name to read ('' = every layout merged, the historic behaviour). A sheet file
         with several sheets/layouts overlays them all when this is blank — sheet.layouts lists the names
         and entity counts, and the answer warns when more than one has content; pass one to read it alone.
@@ -1394,7 +1405,7 @@ def analyze_drawing(file_path: str, save_analysis: bool = True,
         try:
             cfg = _draw.load_config()
             if ext == ".pdf":
-                art = _draw.read_pdf(src, cfg, page=page, scale=scale)
+                art = _draw.read_pdf(src, cfg, page=page, scale=scale, pen_mm=pen_mm)
             else:
                 art = _draw.read(dxf_path, cfg, layout=layout) if layout else _draw.read(dxf_path, cfg)
         except ValueError as exc:
@@ -2640,7 +2651,7 @@ def export_image(view: str = "isometric", width: int = 1280, height: int = 960, 
 
 
 @mcp.tool(structured_output=False)
-def prepare_drawing(file_path: str, page: int = 1, region: str = "", dpi: int = 200) -> list:
+def prepare_drawing(file_path: str, page: int = 1, region: str = "", dpi: int = 300) -> list:
     """Make a PDF/image drawing legible: returns the page as safe-size image tiles PLUS its exact text layer.
 
     Why: a PDF reaches you rasterised at a size you can't control, small dimension text degrades, and pixel
@@ -2649,7 +2660,7 @@ def prepare_drawing(file_path: str, page: int = 1, region: str = "", dpi: int = 
     The text layer gives dimension strings EXACTLY (page points, y down) — prefer it to reading digits by eye.
     kind='vector' = text+paths (exact numbers); 'scan' = raster only (read by vision, mark as such).
 
-    file_path: .pdf or .png/.jpg/.tif/.bmp. page: 1-based. dpi: render density (default 200; lowered
+    file_path: .pdf or .png/.jpg/.tif/.bmp. page: 1-based. dpi: render density (default 300; lowered
     automatically to fit). region: JSON [x0,y0,x1,y1] in PAGE POINTS to zoom one area (e.g. a dimension
     cluster or the title block) — use the text layer's coordinates. Needs PyMuPDF (requirements-pdf.txt)."""
     src = os.path.abspath(file_path)
@@ -2700,7 +2711,7 @@ def prepare_drawing(file_path: str, page: int = 1, region: str = "", dpi: int = 
 
 
 @mcp.tool(structured_output=False)
-def annotate_regions(file_path: str, marks: str, page: int = 1, region: str = "", dpi: int = 200) -> list:
+def annotate_regions(file_path: str, marks: str, page: int = 1, region: str = "", dpi: int = 300) -> list:
     """Draw YOUR claimed locations on the drawing and look at the result — a self-check before you rely on them.
 
     Your localisation of a dimension, a hole or a feature is approximate (vision docs: verify before use). Give

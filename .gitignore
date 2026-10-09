@@ -46,3 +46,13 @@ scratch/
 # bin/ and obj/ are ignored by the [Bb]in/ and [Oo]bj/ rules above.
 
 
+
+# Customer-specific field-test material (numbers read from a third party's proprietary drawings): kept on disk
+# for the developer, never published.
+examples/*-rebuild/
+
+# Scratch files the drawing tools write NEXT TO the user's source drawings (DWG/SLDDRW -> DXF exports, saved analyses)
+*.dwg2dxf.dxf
+*.slddrw2dxf.dxf
+*.analysis-v*.json
+.solidpilot/

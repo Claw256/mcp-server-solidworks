@@ -401,6 +401,7 @@
     "file_path": "string (required - absolute path to the .DXF, .DWG, .SLDDRW or vector .PDF technical drawing; a DWG/SLDDRW is opened in SolidWorks and exported to DXF automatically; a PDF page is rebuilt as an in-memory DXF)",
     "save_analysis": "boolean (optional, default true - also write <name>.analysis-v<version>.json beside the source as a research artifact; same version overwrites)",
     "page": "integer (optional, PDF only, 1-based, default 1)",
+    "pen_mm": "number (optional, PDF only, default 0 = every pen) - keep only primitives stroked with this width (mm) as part geometry; sheet.pdf.pens lists the pens and pen_suggested_mm the arc-richest one",
     "scale": "string (optional, PDF only - drawing scale like '1:2' (paper:true); overrides the title-block text; default '' = read it from the page, else ASSUME 1:1 and say so)",
     "layout": "string (optional, default '' = every DXF layout merged; a layout NAME reads that sheet alone - sheet.layouts lists the names and entity counts)",
     "mode": "string enum (optional, default 'auto') - 'auto': the gate picks DIRECT_BUILDABLE (a short plain-text summary of an already-lowered flat pattern) or 'NOT_DIRECT | <reason>' followed by the WHOLE analysis; 'ir': the lowered Feature Graph IR without building; 'build': lower AND build through pycompiler (opens a new part, bumps state_version). ONE FORMAT since 2026-09-07: the first-turn SUMMARY and the per-view PULL (`view='v0'`) were retired together with 'full' because, once the wire form landed, the complete artifact measured SMALLER on all 10 samples than a summary plus the pulls it forced (f-3: 14.0 KB against 28.7)."
@@ -643,7 +644,7 @@
     "file_path": "string (required — .pdf or .png/.jpg/.tif/.bmp)",
     "page": "integer (optional, 1-based, default 1)",
     "region": "string (optional — JSON [x0,y0,x1,y1] in PAGE POINTS to zoom one area; default = overview + tiles)",
-    "dpi": "integer (optional, default 200 — lowered automatically so every image fits the tier limits)"
+    "dpi": "integer (optional, default 300 — lowered automatically so every image fits the tier limits)"
    }
   },
   "output": "[JSON text {file,page,pages,kind,page_pt,images:[{n,clip,px_per_pt,width,height}],text_layer:{items:['text@x,y'],...},note}, image tiles...]"
@@ -672,7 +673,7 @@
     "marks": "string (required — JSON list of {box:[x0,y0,x1,y1] | point:[x,y], label?} in PAGE POINTS)",
     "page": "integer (optional, 1-based, default 1)",
     "region": "string (optional — JSON [x0,y0,x1,y1] in page points; default = the marks plus a margin)",
-    "dpi": "integer (optional, default 200 — lowered automatically to fit the image limits)"
+    "dpi": "integer (optional, default 300 — lowered automatically to fit the image limits)"
    }
   },
   "output": "[JSON text {file,page,image:{width,height,px_per_pt,clip},marks:[{label,kind,page_pt,px}]}, PNG image]"

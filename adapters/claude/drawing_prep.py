@@ -114,7 +114,7 @@ def plan_tiles(rect, dpi, tier=None, overlap=0.08, max_tiles=8):
             for j in range(ny) for i in range(nx)]
 
 
-def plan_tiles_auto(rect, dpi=200, tier=None, max_tiles=8):
+def plan_tiles_auto(rect, dpi=300, tier=None, max_tiles=8):
     """plan_tiles, lowering the dpi (x0.8 steps, floor 40) until the grid fits `max_tiles`.
     -> (tiles, dpi_used)."""
     d = float(max(30, min(dpi, 600)))
@@ -125,7 +125,7 @@ def plan_tiles_auto(rect, dpi=200, tier=None, max_tiles=8):
     return tiles, d
 
 
-def render_region(fitz, page, clip, tier=None, dpi=200):
+def render_region(fitz, page, clip, tier=None, dpi=300):
     """Render `clip` (points) to PNG bytes at <= `dpi`, shrunk so the PNG ALWAYS fits the tier
     (so the client never has to resize and a tool_result is never rejected).
     -> (png_bytes, {width, height, px_per_pt, clip})."""
@@ -207,7 +207,7 @@ def parse_marks(marks):
     return out
 
 
-def annotate_region(fitz, page, marks, clip=None, tier=None, dpi=200):
+def annotate_region(fitz, page, marks, clip=None, tier=None, dpi=300):
     """Draw `marks` (page points) on the page IN MEMORY (the document is never saved) and render
     `clip` (default: the union of the marks plus a margin). -> (png, info, marks_with_pixels).
     Each mark gains `px` = its location in the returned image, so a claimed localisation can be

@@ -211,10 +211,11 @@ def _extract(page):
     def P(p):
         return (p[0] * _K, (H - p[1]) * _K)
 
-    prims, arrows = [], []
+    prims, arrows, pens = [], [], []
     for path in page.get_drawings():
         items = path.get("items") or []
         kind = path.get("type") or "s"
+        n_before = len(prims)
         if kind == "f":                                    # pure fill: an arrowhead triangle, or glyph ink
             pts = []
             for it in items:
@@ -294,6 +295,7 @@ def _extract(page):
                     for i in range(8):
                         prims.append(("line", pts[i], pts[i + 1], cls))
         flush()
+        pens.extend([round((path.get("width") or 0.0) * _K, 3)] * (len(prims) - n_before))
 
     texts = []
     for blk in page.get_text("dict").get("blocks", []):
@@ -306,7 +308,24 @@ def _extract(page):
                     continue
                 ox, oy = sp["origin"]
                 texts.append((s, ox * _K, (H - oy) * _K, max(sp.get("size", 8.0) * _K, 0.5), rot))
-    return prims, arrows, texts
+    return prims, arrows, texts, pens
+
+
+def _pen_stats(prims, pens):
+    """[{width_mm, primitives, curves}] heaviest-population first, plus the SUGGESTED part pen: CAD PDFs draw the
+    part with one pen and everything else (dimensions, outlined text, centre lines, the title-block grid) with
+    others, and the part pen is the one rich in arcs/circles. A suggestion only: ties and tiny drawings are
+    ambiguous, so the caller can pass pen_mm."""
+    by = {}
+    for pr, w in zip(prims, pens):
+        d = by.setdefault(w, {"width_mm": w, "primitives": 0, "curves": 0})
+        d["primitives"] += 1
+        if pr[0] in ("arc", "circle"):
+            d["curves"] += 1
+    rows = sorted(by.values(), key=lambda d: -d["primitives"])
+    best = max(rows, key=lambda d: (d["curves"], d["primitives"]), default=None)
+    suggested = best["width_mm"] if best and best["curves"] >= 3 and len(rows) > 1 else None
+    return rows, suggested
 
 
 def _pair_arrows(arrows):
@@ -385,10 +404,26 @@ def _is_dimension_furniture(a, b, dims):
     return False
 
 
-def build_dxf_doc(page, scale_override=""):
-    """-> (ezdxf doc, report). The document is what `dxf_read.read_doc` consumes."""
+def build_dxf_doc(page, scale_override="", pen_mm=0.0):
+    """-> (ezdxf doc, report). The document is what `dxf_read.read_doc` consumes.
+    pen_mm > 0 keeps ONLY primitives stroked with that pen width as part geometry (the rest -- dimension lines,
+    outlined text, centre lines, title-block grid -- are dropped; arrowheads and text still feed dimension
+    recognition). 0 = every pen (fine for a drawing made with ONE pen; CAD PDFs usually are not)."""
     ezdxf = _ezdxf()
-    prims, arrows, texts = _extract(page)
+    prims, arrows, texts, pens = _extract(page)
+    pen_rows, pen_suggested = _pen_stats(prims, pens)
+    pen_used = None
+    if pen_mm and pen_mm > 0:
+        # the SHEET BORDER must survive the filter whatever its pen: the reader recognises the frame as the cluster that
+        # encloses everything else, and without a border the part itself (a plate enclosing its holes) would be taken for it
+        span = 0.85 * min(page.rect.width, page.rect.height) * _K
+
+        def _border(pr):
+            return pr[0] == "line" and math.hypot(pr[1][0] - pr[2][0], pr[1][1] - pr[2][1]) >= span
+
+        keep = [i for i, w in enumerate(pens) if abs(w - pen_mm) <= 0.006 or _border(prims[i])]
+        prims = [prims[i] for i in keep]
+        pen_used = pen_mm
     prims, n_chains, n_segs = _merge_baked_dashes(prims)
     if len(prims) < 5:
         raise ValueError("this page has almost no vector geometry (%d paths) -- it is a scan or an image; "
@@ -488,18 +523,21 @@ def build_dxf_doc(page, scale_override=""):
               "scale": scale_label, "scale_factor": factor, "scale_source": scale_src,
               "paths": len(prims), "dashes_merged": n_chains, "dash_segments_merged": n_segs,
               "arrowheads": len(arrows), "dimensions_made": made,
-              "dimension_lines_dropped": dropped, "unassigned_numbers": unassigned[:80]}
+              "dimension_lines_dropped": dropped, "unassigned_numbers": unassigned[:80],
+              "pens": pen_rows[:8], "pen_used_mm": pen_used, "pen_suggested_mm": pen_suggested}
     return doc, report
 
 
-def read_pdf(path, cfg, page=1, scale=""):
-    """Read page `page` (1-based) of a VECTOR PDF -> the draw dialect (+ sheet.pdf report)."""
+def read_pdf(path, cfg, page=1, scale="", pen_mm=0.0):
+    """Read page `page` (1-based) of a VECTOR PDF -> the draw dialect (+ sheet.pdf report).
+    pen_mm: keep only that stroke width as part geometry (see build_dxf_doc); sheet.pdf.pens / pen_suggested_mm
+    say which pens the page uses."""
     fitz = _fitz()
     pdf = fitz.open(path)
     try:
         if not 1 <= page <= pdf.page_count:
             raise ValueError("%s has %d page(s); asked for page %d" % (path, pdf.page_count, page))
-        doc, report = build_dxf_doc(pdf[page - 1], scale)
+        doc, report = build_dxf_doc(pdf[page - 1], scale, pen_mm)
     finally:
         pdf.close()
     auditor = doc.audit()
