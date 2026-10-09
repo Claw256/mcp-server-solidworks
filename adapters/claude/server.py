@@ -11,7 +11,7 @@ from mcp.server import MCPServer
 from mcp.server.caching import CacheHint
 from mcp.server.mcpserver.exceptions import ResourceError
 from execution_client import call_tool, get_state, ensure_ready as _ensure_ready, ExecutionLayerError
-from response_mapper import map_response
+from response_mapper import map_response, CadOperationError
 import slddrw_merge
 # NOTE: pycompiler is reached via `from ir_execution_port import run_feature_graph` imported
 # LAZILY inside rebuild_from_ir and submit_feature_graph — a missing compiler tree degrades to a
@@ -88,12 +88,15 @@ def _call(tool_name: str, params: dict) -> str:
     removes the need to restart the adapter after every execution-layer rebuild.
     """
     global _state_version
-    response = call_tool(tool_name, _next_operation_id(),
-                         _state_version, params)
-    if _is_state_mismatch(response):
-        _state_version = get_state()
-        response = call_tool(
-            tool_name, _next_operation_id(), _state_version, params)
+    try:
+        response = call_tool(tool_name, _next_operation_id(),
+                             _state_version, params)
+        if _is_state_mismatch(response):
+            _state_version = get_state()
+            response = call_tool(
+                tool_name, _next_operation_id(), _state_version, params)
+    except ExecutionLayerError as ex:      # connection / spawn / HTTP failures: say WHAT, not "Error executing tool"
+        raise CadOperationError(f"Execution layer unavailable | {ex}") from ex
     _update_state_version(response)
     return map_response(response)
 
@@ -111,9 +114,12 @@ def ensure_ready() -> str:
     part). Safe to call anytime; idempotent. Call this first at the start of a session, or
     whenever a tool fails with a connection / COM-attach error."""
     global _state_version
-    body = _ensure_ready()
+    try:
+        body = _ensure_ready()
+    except ExecutionLayerError as ex:
+        raise CadOperationError(f"Execution layer unavailable | {ex}") from ex
     if not body.get("comAttached"):
-        raise RuntimeError(
+        raise CadOperationError(
             "SolidWorks is not ready | "
             f"launch_error={body.get('launchError') or body.get('ensureError')}"
         )

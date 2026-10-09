@@ -2,17 +2,33 @@
 Maps execution/solidworks ExecutionResponse payloads to MCP tool result strings.
 
 COMPLETED → success text with state summary
-FAILED    → raises RuntimeError (the SDK surfaces this as isError=True)
+FAILED    → raises CadOperationError (a ToolError: the model reads `code | message`)
 DUPLICATE → success text noting idempotent result
+
+WHY ToolError: the MCP SDK (v2) shows the model only "Error executing tool <name>" for any exception
+that is NOT a ToolError -- the real cause (NO_ACTIVE_DOCUMENT, EXTRUSION_FAILED, ...) was invisible, so
+a failed verify_state looked like an unexplained crash. CadOperationError is also a RuntimeError, so
+existing `except RuntimeError` handlers keep working.
 """
 import json
+
+try:
+    from mcp.server.mcpserver.exceptions import ToolError as _ToolError
+except Exception:  # noqa: BLE001 - tests / tooling without the SDK still import this module
+    class _ToolError(Exception):
+        pass
+
+
+class CadOperationError(_ToolError, RuntimeError):
+    """A failure the model should READ: the execution layer's code and message, verbatim."""
 
 
 def map_response(response: dict) -> str:
     """
     Convert an ExecutionResponse dict into a MCP-compatible result string.
 
-    Raises RuntimeError for FAILED responses so the SDK marks the call as an error.
+    Raises CadOperationError for FAILED responses so the SDK marks the call as an error AND the
+    model sees why.
     """
     status = response.get("status")
 
@@ -40,9 +56,9 @@ def map_response(response: dict) -> str:
 
     if status == "FAILED":
         error = response.get("error") or {}
-        raise RuntimeError(
+        raise CadOperationError(
             f"CAD operation failed | code={error.get('code')} | "
             f"message={error.get('message')}"
         )
 
-    raise RuntimeError(f"Unknown execution response status: {status}")
+    raise CadOperationError(f"Unknown execution response status: {status}")
