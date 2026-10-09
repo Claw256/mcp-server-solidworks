@@ -1,0 +1,8 @@
+# OPTIONAL: PDF/image drawing support for the `prepare_drawing` tool. Without it the tool answers
+# FAILED | PDF_READER_UNAVAILABLE and everything else works unchanged.
+#
+# LICENCE NOTE: PyMuPDF is AGPL-3.0 (or a commercial licence from Artifex). SolidPilot is AGPL-3.0
+# too, so the open-source distribution is consistent; a customer using SolidPilot under its separate
+# COMMERCIAL licence must also hold Artifex's commercial licence before enabling this extra.
+# It is imported lazily and never bundled.
+pymupdf>=1.24

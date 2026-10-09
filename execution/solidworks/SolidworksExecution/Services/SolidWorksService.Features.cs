@@ -138,8 +138,10 @@ namespace SolidworksExecution.Services
                     if (!string.IsNullOrEmpty(profileSketchName))
                         modelDoc.Extension.SelectByID2(profileSketchName, "SKETCH", 0, 0, 0, false, 0, null, 0);
 
+                    // revolve_cut=true => IsCut (4th arg of FeatureRevolve2): remove material instead of adding.
+                    bool revolveCut = p?.Value<bool?>("revolve_cut") ?? false;
                     feature = featureMgr.FeatureRevolve2(
-                        true, true, false, false, false, false,
+                        true, true, false, revolveCut, false, false,
                         0, 0, angle, 0, false, false,
                         0.0, 0.0, 0, 0.0, 0.0, true, true, true) as IFeature;
                 }

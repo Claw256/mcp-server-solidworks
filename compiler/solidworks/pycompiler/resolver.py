@@ -140,7 +140,7 @@ def resolve_face_by_anchor(port, state_version, near, node_id=None):
             # coplanar faces group together and distinct planes are told apart.
             nn = tuple(round(abs(c), 3) for c in n[:3])
             d = round(abs(near[0] * n[0] + near[1] * n[1] + near[2] * n[2]), 5)
-            matches.append((_dist3(near, p), int(f.get("i", -1)), (nn, d)))
+            matches.append((_dist3(near, p), int(f.get("i", -1)), (nn, d), n, p))
 
     if not matches:
         raise FeatureError("no planar face's plane contains the anchor point %s — the up-to face "
@@ -156,7 +156,8 @@ def resolve_face_by_anchor(port, state_version, near, node_id=None):
     if idx < 0:
         raise FeatureError("anchored face has no valid index",
                            code="REFERENCE_UNRESOLVED", node_id=node_id, step=step)
-    return idx, {"face_index": idx, "coplanar_candidates": len(matches)}
+    return idx, {"face_index": idx, "coplanar_candidates": len(matches),
+                 "normal": matches[0][3][:3], "point": matches[0][4][:3]}
 
 
 _DATUM_AXIS = {"front": (0.0, 0.0, 1.0), "top": (0.0, 1.0, 0.0), "right": (1.0, 0.0, 0.0)}
@@ -341,6 +342,34 @@ def resolve_component_entity_by_anchor(port, state_version, component_name, anch
 
 def _is_num(v):
     return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def resolve_circular_edges(port, state_version, center, normal, radius, node_id=None):
+    """Edge index list for the circle of `radius` about `center`, in the plane through `center` with
+    unit `normal` -- the rim of a hole just cut. Matches by GEOMETRY (each edge's reported `mid` lies on
+    the circle), because a full circle's `mid` is a seam point nobody can predict. A circle split into
+    arcs yields several indices; none => REFERENCE_UNRESOLVED."""
+    step = "resolve_circular_edges"
+    data = _analyze_payload(port, state_version, "edges", node_id, step)
+    n = normal
+    nl = math.sqrt(n[0] ** 2 + n[1] ** 2 + n[2] ** 2) or 1.0
+    n = (n[0] / nl, n[1] / nl, n[2] / nl)
+    hits = []
+    for e in data.get("edges") or []:
+        m = e.get("mid")
+        if not (isinstance(m, list) and len(m) >= 3):
+            continue
+        d = (m[0] - center[0], m[1] - center[1], m[2] - center[2])
+        axial = d[0] * n[0] + d[1] * n[1] + d[2] * n[2]
+        radial = math.sqrt(max(0.0, d[0] ** 2 + d[1] ** 2 + d[2] ** 2 - axial ** 2))
+        if abs(axial) <= _EDGE_TOL and abs(radial - radius) <= _EDGE_TOL:
+            hits.append(int(e.get("i", -1)))
+    hits = [i for i in hits if i >= 0]
+    if not hits:
+        raise FeatureError("no edge lies on the hole rim (radius %.6g m about %s) — the countersink "
+                           "chamfer has nothing to cut" % (radius, list(center)),
+                           code="REFERENCE_UNRESOLVED", node_id=node_id, step=step)
+    return sorted(set(hits))
 
 
 def resolve_edges_by_anchor(port, state_version, anchors, node_id=None):

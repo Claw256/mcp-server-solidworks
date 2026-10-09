@@ -240,7 +240,8 @@
    "description": "Solid of revolution of the referenced sketch node (COVERED since v0.5.1 — grown for the 1-2 flange). The profile sketch should contain the axis segment (typically the construction centerline of the half-section, the classic revolve idiom); the compiler passes the axis segment's 2D coordinates and the tool selects it in the active sketch and treats it as the centerline.",
    "sketch": "string — id of a sketch node (must be the immediately preceding node — the revolve consumes the ACTIVE sketch)",
    "axis": "{ x1, y1, x2, y2 } — the axis SEGMENT's exact 2D sketch coordinates (meters), from analyze_model(sketch); normally the sketch's construction centerline",
-   "angle": "number — RADIANS (default 6.283185 = 360°, matching the recipe's SI dimension; the compiler converts to the tool boundary's degrees, C4)"
+   "angle": "number — RADIANS (default 6.283185 = 360°, matching the recipe's SI dimension; the compiler converts to the tool boundary's degrees, C4)",
+   "operation": "'boss' | 'cut' (optional, default 'boss') — 'cut' makes a revolve CUT (FeatureRevolve2 IsCut): the profile+axis sketch removes material from the existing body; lowers to extrude_feature(revolve, revolve_cut=true)"
   },
   "sweep": {
    "description": "Swept solid (boss) along a path sketch (COVERED since v0.7.0 — forward-vocabulary session, IR-ADR-017). Lowers to extrude_feature(sweep). GRAMMAR: the PROFILE sketch node must IMMEDIATELY precede the sweep (the tool consumes the ACTIVE sketch as the profile, like extrude); the PATH is an EARLIER sketch node referenced by id — the compiler substitutes its RUNTIME sketch name (node_feature mechanism, localization/numbering-proof, same as loft's profiles). So the node order is: path sketch, ..., profile sketch, sweep. Boss-only (the execution surface has no sweep cut).",
@@ -273,10 +274,14 @@
    "equal_spacing": "boolean (default true)"
   },
   "hole": {
-   "description": "Parametric hole. Encapsulates sketch+cut; the compiler expands it (resolve top face -> create_sketch(on_face, face_index) -> circle at centre -> through cut).",
-   "ref": "node_face + position (e.g. top face of n1, center)",
-   "diameter": "number — meters",
-   "depth": "number — meters, or 'through_all' (v0.5 supports 'through_all' only; 'through' accepted as an alias)"
+   "description": "Parametric hole on a planar face. Encapsulates sketch+cut(s); the compiler resolves the face, declares a sketch frame centred on the hole (so the 3D point maps through the MEASURED rebuild frame) and expands to create_sketch(on_face) -> circle -> cut. Counterbore = pocket then shank cut from the pocket floor; countersink = a 90-degree chamfer on the rim; thread is RECORDED in the op note, not modelled (the hole is cut at the tap-drill diameter).",
+   "ref": "{ node_face: { node, selector: 'top' } } (the +Y top face of an earlier box/extrude) OR { face: { near: [x,y,z] } } (ANY planar face — a point on its plane). Exactly one.",
+   "at": "[x,y,z] meters — the hole centre, a point ON the face (within 0.1 mm of its plane). Required with ref.face. With node_face either give 'at' or ref.position 'center' (the legacy origin-centred form).",
+   "diameter": "number — meters (the shank / tap-drill diameter)",
+   "depth": "'through_all' (alias 'through') | number — meters, BLIND, measured from the face",
+   "cbore": "{ diameter, depth } optional — counterbore larger than 'diameter'; depth < total hole depth",
+   "csink": "{ diameter, angle? } optional — countersink diameter AT THE FACE; angle = INCLUDED angle in radians (1.5708 = 90 degrees, the default; 90 = rim chamfer). Any other angle is cut as a REVOLVE CUT and needs the hole axis to lie in a canonical datum plane (Front/Right/Top; hole centre on the plane, face normal perpendicular to the plane normal) — otherwise the build refuses with REFERENCE_MISMATCH. Exclusive with cbore",
+   "thread": "{ size: 'M6x1', depth?, cosmetic? } optional — recorded only"
   },
   "fillet": {
    "description": "3D edge fillet (post-solid, NOT a sketch fillet). Lowers to add_edge_feature(fillet, edge_indices) after the resolver matches each edge anchor against live analyze_model(edges) midpoints. THE reference-model testbed — every lesson here feeds P1.3.",

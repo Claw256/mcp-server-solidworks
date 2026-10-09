@@ -31,6 +31,7 @@ from .pairing import pair_bend_notes
 from .lowering import assess, lower_flat_pattern
 from .wire import decode as wire_decode, encode as wire_encode
 from .dxf_read import ANALYSIS_VERSION, load_config, read
+from .pdf_read import read_pdf   # PyMuPDF/ezdxf are imported lazily INSIDE it, never at startup
 
 __all__ = ["read", "load_config", "ANALYSIS_VERSION", "chain_view", "loop_member_segments",
-           "pair_bend_notes", "assess", "lower_flat_pattern", "wire_encode", "wire_decode"]
+           "pair_bend_notes", "assess", "lower_flat_pattern", "wire_encode", "wire_decode", "read_pdf"]

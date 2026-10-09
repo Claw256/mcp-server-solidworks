@@ -125,7 +125,36 @@
     "reverse": "boolean (boss/cut — flip feature direction; needed for a cut/boss sketched on a part face where material is on the opposite side)",
     "through": "boolean (boss/cut — through-all end condition; depth ignored)",
     "up_to_face_index": "integer (optional, default -1 = off; boss/cut — >= 0 selects the UP-TO-SURFACE end condition terminating exactly on that model face; index from analyze_model(faces), same enumeration as create_sketch face_index; depth ignored. The face is append-selected with Mark=1, the FeatureExtrusion3/FeatureCut4 end-condition reference mark)",
-    "mid_plane": "boolean (optional, default false; boss/cut — swEndCondMidPlane: extrudes SYMMETRICALLY about the sketch plane, depth = TOTAL width; conflicts with through/up_to_face_index)"
+    "mid_plane": "boolean (optional, default false; boss/cut — swEndCondMidPlane: extrudes SYMMETRICALLY about the sketch plane, depth = TOTAL width; conflicts with through/up_to_face_index)",
+    "revolve_cut": "boolean (optional, default false; revolve only — true makes FeatureRevolve2 IsCut=true: a revolve CUT removing material instead of a boss)"
+   }
+  },
+  "output": "→ see execution-response.json"
+ },
+ "hole_wizard": {
+  "description": "Places a standard SOLIDWORKS Hole Wizard hole (counterbore / countersink / clearance hole / tapped hole) via IFeatureManager.HoleWizard5 at one or more points on a planar face. Hole centres are picked with IModelDocExtension.SelectByRay (Mark 0) against the face, as the HoleWizard5 docs prescribe; the face (face_index or face point) is only used for its normal. fastener_type defaults per standard + hole_type; a standard/fastener/size combination SolidWorks does not know fails with HOLE_WIZARD_FAILED. Part documents only.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state)",
+   "params": {
+    "hole_type": "string (required: 'counterbore' | 'countersink' | 'hole' | 'tap')",
+    "standard": "string (required: 'ansi_inch' | 'ansi_metric' | 'iso' | 'din' | 'jis')",
+    "size": "string (required — e.g. 'M6'; must be valid for the fastener type)",
+    "points": "string (required — JSON array of [x,y,z] hole centres in meters, ON the target planar face; a real JSON array is also accepted)",
+    "face_index": "integer (optional — i-th face from analyze_model(faces); the face must be planar)",
+    "face_x": "number (optional — with face_y/face_z: a point ON the planar face, alternative to face_index)",
+    "face_y": "number (optional — see face_x)",
+    "face_z": "number (optional — see face_x)",
+    "fastener_type": "string (optional, default 'default' = table for standard + hole_type; or an integer swWzdHoleStandardFastenerTypes_e value as a string/number)",
+    "end_condition": "string (optional, default 'blind': 'blind' | 'through_all')",
+    "depth": "number (meters; required > 0 for blind)",
+    "diameter": "number (meters; 0 = the standard's diameter for size)",
+    "cbore_diameter": "number (optional, meters — counterbore holes)",
+    "cbore_depth": "number (optional, meters — counterbore holes)",
+    "csink_diameter": "number (optional, meters — countersink holes)",
+    "csink_angle": "number (optional, DEGREES included angle — countersink holes; converted to radians C#-side)",
+    "thread_depth": "number (optional, meters — tapped holes)",
+    "reverse": "boolean (optional, default false — RevDir of HoleWizard5)"
    }
   },
   "output": "→ see execution-response.json"
@@ -347,12 +376,12 @@
   "output": "→ see execution-response.json"
  },
  "analyze_model": {
-  "description": "Analyzes the active part document without modifying it. Does NOT increment state_version. analysis_type='mass_properties': returns volume, surface_area, center of gravity (cx/cy/cz). analysis_type='geometry': returns bodies, faces, edges, vertices counts. analysis_type='edges': returns one JSON object listing every solid edge with start/end/midpoint 3D coords (meters, rounded to 6 decimals; closed/circular edges also include length) — pick an edge index (the `i` field) for add_edge_feature edge_indices, or a midpoint for coordinate selection. Slowest mode on very large parts (COM-bound). analysis_type='faces': returns one JSON object listing every solid face with a stable index `i` (planar faces also carry normal, area, and a representative on-plane point) — pick a face index for create_sketch(on_face, face_index). analysis_type='features': the COMPACT part recipe (default 'understand the part' read) — ordered feature tree (name/type, suppressed only when true), deduped driving dimensions (SI, rounded to 6 decimals), a per-sketch SUMMARY (segment counts + an inline {cx,cy,r} for single-full-circle profiles; NO per-segment coordinate dump), each sketch's plane {ref:'Front/Top/Right Plane', offset}, each extrude/cut's {end, depth (blind only), reversed}, pattern semantics, and equations + globals; features are in tree (history) order. analysis_type='sketch' (requires 'name'): ONE sketch's full geometry (every segment, rounded to 6 decimals) + plane — use only when exact sketch coordinates are needed. analysis_type='feature_map': per-feature geometry ATTRIBUTION — walks the tree base→end with the ROLLBACK BAR (swMoveRollbackBarTo_e) and diffs the topology between stops inside the tool; consumed_edges (both endpoints gone — trimmed neighbours excluded) are the deterministic fillet/chamfer edge anchors (PRE-feature geometry), created_faces are genuinely new surfaces (trimmed existing planes excluded). Non-destructive: the bar is restored to the end in finally; nothing is saved.",
+  "description": "Analyzes the active part document without modifying it. Does NOT increment state_version. analysis_type='mass_properties': returns volume, surface_area, center of gravity (cx/cy/cz). analysis_type='geometry': returns bodies, faces, edges, vertices counts. analysis_type='bbox': EXACT axis-aligned extents of all solid bodies as JSON {min,max,size} in meters (IBody2.GetExtremePoint). Cylindrical faces in 'faces' also carry u_span/v_span and hole (true = concave, i.e. a hole rather than a boss). analysis_type='edges': returns one JSON object listing every solid edge with start/end/midpoint 3D coords (meters, rounded to 6 decimals; closed/circular edges also include length) — pick an edge index (the `i` field) for add_edge_feature edge_indices, or a midpoint for coordinate selection. Slowest mode on very large parts (COM-bound). analysis_type='faces': returns one JSON object listing every solid face with a stable index `i` (planar faces also carry normal, area, and a representative on-plane point) — pick a face index for create_sketch(on_face, face_index). analysis_type='features': the COMPACT part recipe (default 'understand the part' read) — ordered feature tree (name/type, suppressed only when true), deduped driving dimensions (SI, rounded to 6 decimals), a per-sketch SUMMARY (segment counts + an inline {cx,cy,r} for single-full-circle profiles; NO per-segment coordinate dump), each sketch's plane {ref:'Front/Top/Right Plane', offset}, each extrude/cut's {end, depth (blind only), reversed}, pattern semantics, and equations + globals; features are in tree (history) order. analysis_type='sketch' (requires 'name'): ONE sketch's full geometry (every segment, rounded to 6 decimals) + plane — use only when exact sketch coordinates are needed. analysis_type='feature_map': per-feature geometry ATTRIBUTION — walks the tree base→end with the ROLLBACK BAR (swMoveRollbackBarTo_e) and diffs the topology between stops inside the tool; consumed_edges (both endpoints gone — trimmed neighbours excluded) are the deterministic fillet/chamfer edge anchors (PRE-feature geometry), created_faces are genuinely new surfaces (trimmed existing planes excluded). Non-destructive: the bar is restored to the end in finally; nothing is saved.",
   "input": {
    "operation_id": "string (required, unique idempotency key)",
    "state_version": "integer (required, must match current execution state)",
    "params": {
-    "analysis_type": "string (required: 'mass_properties', 'geometry', 'bodies', 'edges', 'faces', 'features', 'sketch', or 'feature_map')",
+    "analysis_type": "string (required: 'mass_properties', 'geometry', 'bbox', 'bodies', 'edges', 'faces', 'features', 'sketch', or 'feature_map')",
     "name": "string (required only for analysis_type='sketch' — the sketch feature name, e.g. 'Sketch2')",
     "from_feature": "string (optional, feature_map only — start the walk at this tree feature name; default = tree base)",
     "to_feature": "string (optional, feature_map only — end the walk at this tree feature name; default = tree end)",
@@ -364,13 +393,16 @@
   "output": "→ see execution-response.json — results encoded in CadState.Features list. mass_properties/geometry: flat 'key=value' strings. edges: a single JSON string {edge_count, edges:[{i,start,end,mid}]} (closed/circular edges also carry length). faces: a single JSON string {face_count, faces:[{i, planar, area, normal?, point?}]} (normal/point only for planar faces). features: a single consolidated JSON string {feature_count, features[], equations[]} — sketches carry a summary (counts [+circle]); NO raw segments. sketch: a single JSON string {name, sketch:{counts, segments[]}, plane} for the one named sketch. feature_map: a single JSON string {feature_count, map:[{feature, type, suppressed?, delta:{faces,edges,vertices}, consumed_edges:[{mid,len}], created_faces:[{point, normal?, planar, area}]}]} — coords in meters rounded to 6 decimals; delta/consumed/created present only for unsuppressed solid-affecting features (sketches/ref geometry are listed name+type only)."
  },
  "analyze_drawing": {
-  "description": "[ADAPTER-ONLY — no C# case] Reads a 2D technical drawing (.DXF or .DWG; a DWG is converted automatically) and returns ONE OF TWO SHAPES, chosen by the READER, never the caller: DIRECT_BUILDABLE (a short plain-text summary of a flat pattern already lowered to Feature Graph IR — blank, thickness + its source, each bend with its edge-class corroboration, skipped bends, expected volume; the contour deliberately NOT echoed back, so it never costs tokens twice), or 'NOT_DIRECT | <gate reason>' followed by the WHOLE `draw`-dialect artifact. SINGLE HOME FOR THE PAYLOAD LEGEND (2026-09-07, payload phase 5): this tool's model-facing docstring in server.py documents what every field MEANS — the edge classes, the class-grouped index-carrying `lines`, `open_singles`, `seq`, the ellipse provenance, the graded alignment, `tier`, `printed`/`printed_mismatch`/`kind_from`/`measures` — because that description reaches the model whether or not it ever calls get_recipe, which a recipe section cannot promise (ADR-077). The recipe's `reverse` section carries the DECISIONS only, and neither repeats the other. Guidance attached to a SINGLE flag is emitted as an adapter-side ADVISORIES block, only when that flag actually fires. Every number is TRUE model mm (DIMLFAC already applied, per view).",
+  "description": "[ADAPTER-ONLY — no C# case] Reads a 2D technical drawing (.DXF, .DWG or .SLDDRW; a DWG/SLDDRW is converted to DXF automatically) and returns ONE OF TWO SHAPES, chosen by the READER, never the caller: DIRECT_BUILDABLE (a short plain-text summary of a flat pattern already lowered to Feature Graph IR — blank, thickness + its source, each bend with its edge-class corroboration, skipped bends, expected volume; the contour deliberately NOT echoed back, so it never costs tokens twice), or 'NOT_DIRECT | <gate reason>' followed by the WHOLE `draw`-dialect artifact. SINGLE HOME FOR THE PAYLOAD LEGEND (2026-09-07, payload phase 5): this tool's model-facing docstring in server.py documents what every field MEANS — the edge classes, the class-grouped index-carrying `lines`, `open_singles`, `seq`, the ellipse provenance, the graded alignment, `tier`, `printed`/`printed_mismatch`/`kind_from`/`measures` — because that description reaches the model whether or not it ever calls get_recipe, which a recipe section cannot promise (ADR-077). The recipe's `reverse` section carries the DECISIONS only, and neither repeats the other. Guidance attached to a SINGLE flag is emitted as an adapter-side ADVISORIES block, only when that flag actually fires. Every number is TRUE model mm (DIMLFAC already applied, per view).",
   "input": {
    "operation_id": "n/a at this level - the DWG->DXF conversion calls carry their own operation_id (uuid4) on /api/tool/execute; a .DXF input touches no execution tool at all",
    "state_version": "n/a at this level - the underlying open/export/close calls thread the adapter's tracked state_version (one-shot resync-retry on INVALID_STATE_VERSION)",
    "params": {
-    "file_path": "string (required - absolute path to the .DXF or .DWG technical drawing)",
+    "file_path": "string (required - absolute path to the .DXF, .DWG, .SLDDRW or vector .PDF technical drawing; a DWG/SLDDRW is opened in SolidWorks and exported to DXF automatically; a PDF page is rebuilt as an in-memory DXF)",
     "save_analysis": "boolean (optional, default true - also write <name>.analysis-v<version>.json beside the source as a research artifact; same version overwrites)",
+    "page": "integer (optional, PDF only, 1-based, default 1)",
+    "scale": "string (optional, PDF only - drawing scale like '1:2' (paper:true); overrides the title-block text; default '' = read it from the page, else ASSUME 1:1 and say so)",
+    "layout": "string (optional, default '' = every DXF layout merged; a layout NAME reads that sheet alone - sheet.layouts lists the names and entity counts)",
     "mode": "string enum (optional, default 'auto') - 'auto': the gate picks DIRECT_BUILDABLE (a short plain-text summary of an already-lowered flat pattern) or 'NOT_DIRECT | <reason>' followed by the WHOLE analysis; 'ir': the lowered Feature Graph IR without building; 'build': lower AND build through pycompiler (opens a new part, bumps state_version). ONE FORMAT since 2026-09-07: the first-turn SUMMARY and the per-view PULL (`view='v0'`) were retired together with 'full' because, once the wire form landed, the complete artifact measured SMALLER on all 10 samples than a summary plus the pulls it forced (f-3: 14.0 KB against 28.7)."
    }
   },
@@ -383,7 +415,8 @@
    "state_version": "integer (required, must match current execution state)",
    "params": {
     "include_geometry": "boolean (optional, default false — also return each view's projected 2D geometry as clean primitives geometry:{lines, curves, frame} via IView.GetPolylines7, for reverse-engineering a part from its drawing independent of dimension clutter; coords in model-scale meters centered on the view, z=0; line segments carry the up/down / which-face profile structure a dim value can't)",
-    "include_relations": "boolean (optional, default false — Batch-4 deterministic enrichment; forces include_geometry on. ADDITIVE only (raw geometry arrays are never replaced): per-view relation GROUPS, cross-view station join keys, dimension→primitive attachment, and center-mark/centerline annotations. Every relation/group names its deterministic 'source' from the CLOSED enum {center_coincide, radius_equal, dist_eq_radius_sum, dist_eq_radius_diff, line_dist_eq_radius, shared_endpoint, endpoint_on_curve, anchor_at_center, anchor_on_primitive} plus 'residual' = the max measured deviation in meters (6dp, computed on unrounded values) — a relation that cannot name a source is never emitted. Tolerance 1e-5 m (10µm) at model scale. No confidence scores, no inference fields; cross-view output is join keys + CANDIDATE sets, never same-entity conclusions. X-crossings of projected edges are DELIBERATELY not reported (a 2D crossing carries no same-depth guarantee); centerlines are read from the view's centerline sketch — when the view reports centerlines but exposes no readable segments, a loud {centerlines_reported, unreadable:true} entry is emitted instead of a heuristic guess.)"
+    "include_relations": "boolean (optional, default false — Batch-4 deterministic enrichment; forces include_geometry on. ADDITIVE only (raw geometry arrays are never replaced): per-view relation GROUPS, cross-view station join keys, dimension→primitive attachment, and center-mark/centerline annotations. Every relation/group names its deterministic 'source' from the CLOSED enum {center_coincide, radius_equal, dist_eq_radius_sum, dist_eq_radius_diff, line_dist_eq_radius, shared_endpoint, endpoint_on_curve, anchor_at_center, anchor_on_primitive} plus 'residual' = the max measured deviation in meters (6dp, computed on unrounded values) — a relation that cannot name a source is never emitted. Tolerance 1e-5 m (10µm) at model scale. No confidence scores, no inference fields; cross-view output is join keys + CANDIDATE sets, never same-entity conclusions. X-crossings of projected edges are DELIBERATELY not reported (a 2D crossing carries no same-depth guarantee); centerlines are read from the view's centerline sketch — when the view reports centerlines but exposes no readable segments, a loud {centerlines_reported, unreadable:true} entry is emitted instead of a heuristic guess.)",
+    "include_extras": "boolean (optional, default false — ADDS an `extras` object with SolidWorks-native facts a DXF export loses: sheets[{name, paper_size, scale_num, scale_den, projection first_angle|third_angle, width_m, height_m, template, views[{name, type, scale, referenced_model, referenced_configuration, notes[{text,pos}], dimensions[{name, value_si, diametric?, tol?{type,min_si,max_si,fit_*}, text?{prefix,suffix,above,below}}]}], notes[]}], custom_properties{}, errors[] (sub-reads that failed). Temporarily activates each sheet and restores the original. Default output is unchanged.)"
    }
   },
   "output": "→ see execution-response.json — CadState.Features holds a single JSON string {view_count, dimension_count, views:[{name, type, scale, pos:[x,y], dimensions:[{name, value_si}], geometry?:{lines:[{x1,y1,x2,y2}], curves:[{n,x1,y1,xm,ym,x2,y2}], frame}}]}. view[0] is the drawing sheet. value_si in meters/radians, rounded to 6 decimals. geometry present only when include_geometry=true. Every computed geometry/section frame also carries normal_axis (the view's viewing direction snapped to a SIGNED principal axis, e.g. 'Y'/'-Z'; omitted when not axis-aligned) — drafting semantics: a CIRCLE in a view is the cross-section of a feature whose axis runs along that view's normal, so circles in different-normal_axis views are DIFFERENT features unless a section proves otherwise. An axis-aligned view's geometry also carries extent {axis:[min,max]} — the SERVER-computed model-space span of ALL that view's primitives along its two resolved axes (frame signs applied; exact circle/arc extremes included). Read extent BEFORE any 'no material beyond X' conclusion — never re-derive a view's span client-side from raw v-coordinates (the frame's direction components can be negative). include_relations=true ADDS (ids are POSITIONAL and per-read: view alias vid='v<views[] index>'; within a view l<i>=geometry.lines[i], a<i>=geometry.curves[i], c<i>=geometry.circles[i]; a re-read after a drawing edit may renumber): per view — vid; relations:{concentric:[{members, center:[x,y], radii[], source:'center_coincide', residual}], equal_diameter:[{members, r, centers[[x,y]..], source:'radius_equal', residual}] (full circles, same Ø, distinct centers), tangent:[{members:[2], at:[x,y], source:'dist_eq_radius_sum'|'dist_eq_radius_diff'|'line_dist_eq_radius', residual}], touches:[{at:[x,y], members, source:'shared_endpoint'|'endpoint_on_curve', residual}]} (empty buckets dropped); center_marks:[{at:[u,v], on:[circle ids], source:'center_coincide', residual} | {at, unmatched:true}]; centerlines:[{x1,y1,x2,y2, through?:[circle ids], source?, residual?}]; per dimension — measures:[primitive ids], measure_src:'anchor_at_center'|'anchor_on_primitive', measure_residual, unmatched_anchors? — or unattached:true when NO primitive resolves (loud, never dropped/guessed). At root — stations:{tol, axes:[{axis:'X'|'Y'|'Z', values:[{v, members:{vid:[ids]}, residual}]}], skipped_views?:[vids]}: per-axis model-coordinate JOIN KEYS from circle centers/extents, line endpoints/constant coords, arc centers/endpoints — only values shared by ≥2 views are listed; members are CANDIDATES (resolve identity via dimensions; >1 candidate = visible ambiguity); relations_skipped_views lists views with no usable transform."
@@ -589,6 +622,60 @@
    }
   },
   "output": "One-line report: verified_criteria PASS/FAIL | topology A/B (EXACT|DIFFER) | volume A/B + dV% | area A/B + dA% | cg_distance. With detail='faces', a trailing faces: matched/MISSING/EXTRA breakdown."
+ },
+ "verify_against_interpretation": {
+  "description": "ADAPTER-ONLY orchestration (no ToolController/SolidWorksService case) — mechanical PASS/FAIL check of the active built part against Claude's interpretation of a drawing. Measures bbox (analyze_model bbox), mass properties and faces, then compares per item; cg_mm catches mirrored / wrong-face features that volume cannot. Read-only.",
+  "input": {
+   "operation_id": "n/a at this level — each underlying read carries its own operation_id (uuid4) on /api/tool/execute",
+   "state_version": "n/a at this level — the underlying calls thread the adapter's tracked state_version",
+   "params": {
+    "expected": "string (required — JSON object in MILLIMETRES, all keys optional: bbox_mm [x,y,z], bbox_ordered, volume_mm3, volume_tol_pct, cg_mm [x,y,z], cg_tol_mm, holes [{diameter_mm, count}], tol_mm)"
+   }
+  },
+  "output": "Multi-line report: verifier verdict PASS/FAIL, one [PASS|FAIL|WARN] row per compared item with expected/built/delta, and [NOT CHECKED] rows for anything that could not be measured."
+ },
+ "prepare_drawing": {
+  "description": "ADAPTER-ONLY (no ToolController/SolidWorksService case) — makes a PDF/image drawing legible for Claude's own vision: renders the page (or one region) as MCP image tiles sized to ALWAYS fit the model's image limits (tool_result images over the limit are rejected, not downscaled), each with its origin/scale so pixel coordinates map back to page points, plus the EXACT text layer (dimension strings with coordinates). kind=vector|mixed|scan tells whether numbers are exact or must be read by vision. Requires optional PyMuPDF.",
+  "input": {
+   "operation_id": "n/a — never reaches the execution layer",
+   "state_version": "n/a — never reaches the execution layer",
+   "params": {
+    "file_path": "string (required — .pdf or .png/.jpg/.tif/.bmp)",
+    "page": "integer (optional, 1-based, default 1)",
+    "region": "string (optional — JSON [x0,y0,x1,y1] in PAGE POINTS to zoom one area; default = overview + tiles)",
+    "dpi": "integer (optional, default 200 — lowered automatically so every image fits the tier limits)"
+   }
+  },
+  "output": "[JSON text {file,page,pages,kind,page_pt,images:[{n,clip,px_per_pt,width,height}],text_layer:{items:['text@x,y'],...},note}, image tiles...]"
+ },
+ "export_image": {
+  "description": "Captures the ACTIVE document's graphics view as an image (IModelDoc2.ShowNamedView2 + ViewZoomtofit2 + SaveBMP). Changes the view orientation only; does NOT increment state_version. The execution layer takes ONE view and writes a .bmp; the MCP adapter loops up to 4 views (comma list), sizes each so it always fits the model's image limits, converts BMP to PNG and returns MCP image content.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state)",
+   "params": {
+    "view": "string (optional, default 'isometric': isometric|front|back|left|right|top|bottom|current; the adapter also accepts a comma list)",
+    "width": "integer (optional, default 1280 at the adapter / 1024 in the execution layer; 64-4096; the adapter reduces it to fit the image limits)",
+    "height": "integer (optional, default 960 at the adapter / 768 in the execution layer; 64-4096)",
+    "file_path": "string (execution layer: required, full .bmp output path; adapter: optional, keeps the first view's BMP there, otherwise a temp file that is deleted)"
+   }
+  },
+  "output": "Execution layer: COMPLETED with the .bmp path in CadState.Features. Adapter: [text 'Image n: view WxH; ...', PNG image content...]."
+ },
+ "annotate_regions": {
+  "description": "ADAPTER-ONLY (no ToolController/SolidWorksService case) — self-check for Claude's own localisations on a PDF/image drawing: draws the supplied boxes/points (PAGE POINTS) in red with labels on an in-memory render of the page and returns the region as an image (sized to fit the model's image limits) plus each mark's pixel position. The file is never modified. Requires optional PyMuPDF.",
+  "input": {
+   "operation_id": "n/a — never reaches the execution layer",
+   "state_version": "n/a — never reaches the execution layer",
+   "params": {
+    "file_path": "string (required — .pdf or .png/.jpg/.tif/.bmp)",
+    "marks": "string (required — JSON list of {box:[x0,y0,x1,y1] | point:[x,y], label?} in PAGE POINTS)",
+    "page": "integer (optional, 1-based, default 1)",
+    "region": "string (optional — JSON [x0,y0,x1,y1] in page points; default = the marks plus a margin)",
+    "dpi": "integer (optional, default 200 — lowered automatically to fit the image limits)"
+   }
+  },
+  "output": "[JSON text {file,page,image:{width,height,px_per_pt,clip},marks:[{label,kind,page_pt,px}]}, PNG image]"
  },
  "open_new_assembly": {
   "description": "Opens a new blank ASSEMBLY document (the twin of open_new_part). Template: explicit template_path, else the user-configured default assembly template, else the first *.asmdot found. Bumps state_version.",

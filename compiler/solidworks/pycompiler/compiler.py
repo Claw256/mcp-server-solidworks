@@ -8,12 +8,14 @@ feature-level error. The caller (the adapter tool) resyncs state_version afterwa
 Public API (consumed by pycompiler/__init__.py and the adapter):
     compile_and_run(port, graph) -> CompileResult
 """
+import math
+
 from . import lowering
 from .errors import FeatureError
 from .ir_schema import validate
-from .resolver import (resolve_center_on_face, resolve_component_entity_by_anchor,
-                       resolve_edges_by_anchor, resolve_face_by_anchor, resolve_face_on_plane,
-                       resolve_top_face)
+from .resolver import (resolve_center_on_face, resolve_circular_edges,
+                       resolve_component_entity_by_anchor, resolve_edges_by_anchor,
+                       resolve_face_by_anchor, resolve_face_on_plane, resolve_top_face)
 
 
 class CompileResult(object):
@@ -86,14 +88,36 @@ def compile_and_run(port, graph):
         ntype = node.get("type")
         rec = {"id": nid, "type": ntype, "status": "PENDING", "ops": []}
         try:
-            ops = _plan_node(port, node, sv, node_features)  # may do a live (read-only) resolve
+            planned = {}                      # side-channel from _plan_node (e.g. a hole's frame)
+            ops = _plan_node(port, node, sv, node_features, planned)  # may do a live (read-only) resolve
+            decl_frame = node.get("frame") or planned.get("frame")
             last_resp = None
             frame_fn = None  # 2D coord transform for this node's entities (sketch frame fix)
             frame_mirror = False
             for op in ops:
                 params = _fill_placeholders(op, last_resp, node_features, nid, ntype)
+                if lowering.EDGE_RING in params:
+                    # Resolved NOW, against the geometry the previous ops just produced (a hole's rim
+                    # does not exist until the hole is cut, so it cannot be planned up front).
+                    ring = params[lowering.EDGE_RING]
+                    params = {k: v for k, v in params.items() if k != lowering.EDGE_RING}
+                    idx = resolve_circular_edges(port, sv, ring["center"], ring["normal"],
+                                                 ring["radius"], node_id=nid)
+                    params["edge_indices"] = "[%s]" % ",".join(str(i) for i in idx)
+                if lowering.SKETCH_FRAME_DECL in params:
+                    # This sketch op declares its OWN frame (e.g. a countersink cone profile on a
+                    # datum plane), replacing the node-level one from here on.
+                    decl_frame = params[lowering.SKETCH_FRAME_DECL]
+                    params = {k: v for k, v in params.items() if k != lowering.SKETCH_FRAME_DECL}
+                axis_in_frame = params.get(lowering.AXIS_IN_FRAME) is True
+                if lowering.AXIS_IN_FRAME in params:
+                    params = {k: v for k, v in params.items() if k != lowering.AXIS_IN_FRAME}
                 if frame_fn is not None and op.tool == "add_sketch_entity":
                     params = _transform_entity_params(params, frame_fn, frame_mirror)
+                elif frame_fn is not None and axis_in_frame and op.tool == "extrude_feature":
+                    params = dict(params)
+                    params["axis_x1"], params["axis_y1"] = frame_fn(params["axis_x1"], params["axis_y1"])
+                    params["axis_x2"], params["axis_y2"] = frame_fn(params["axis_x2"], params["axis_y2"])
                 resp = port.execute(op.tool, params, sv)
                 result.exec_calls += 1
                 sv = _advance(resp, sv, nid, ntype, op)
@@ -109,7 +133,7 @@ def compile_and_run(port, graph):
                     ask = (resp.get("cadState") or {}).get("activeSketch")
                     if nid and ask:
                         node_features[nid] = ask
-                if _echoes_frame(op) and node.get("frame"):
+                if _echoes_frame(op) and decl_frame:
                     # The node records the ORIGINAL sketch's frame; the response carries the
                     # frame the op just MEASURED (create_sketch — or edge_flange_sketch, whose
                     # generated profile sketch has an UNPREDICTABLE frame). Coordinates are
@@ -124,7 +148,7 @@ def compile_and_run(port, graph):
                             "echoed none (execution layer too old?)",
                             code="FRAME_UNAVAILABLE", node_id=nid, node_type=ntype,
                             step=op.tool)
-                    frame_fn, frame_mirror = _sketch_frame_transform(node["frame"], measured)
+                    frame_fn, frame_mirror = _sketch_frame_transform(decl_frame, measured)
                 rec["ops"].append({"tool": op.tool, "note": op.note, "state_version": sv})
             rec["status"] = "COMPLETED"
             result.node_log.append(rec)
@@ -182,7 +206,7 @@ def compile_and_run(port, graph):
     return result
 
 
-def _plan_node(port, node, state_version, node_features):
+def _plan_node(port, node, state_version, node_features, planned=None):
     ntype = node["type"]
     if ntype == "box":
         return lowering.lower_box(node)
@@ -225,9 +249,7 @@ def _plan_node(port, node, state_version, node_features):
     if ntype == "circular_pattern":
         return lowering.lower_circular_pattern(node)
     if ntype == "hole":
-        face_index, info = resolve_top_face(port, state_version, node_id=node.get("id"))
-        center2d = resolve_center_on_face(info)
-        return lowering.lower_hole(node, face_index, center2d)
+        return _plan_hole(port, node, state_version, planned if planned is not None else {})
     if ntype == "fillet":
         edge_indices, _info = resolve_edges_by_anchor(port, state_version, node["edges"],
                                                       node_id=node.get("id"))
@@ -291,6 +313,63 @@ def _plan_node(port, node, state_version, node_features):
             names.append(nm)
         return lowering.lower_loft(node, names)
     raise FeatureError("unknown node type '%s'" % ntype, code="UNKNOWN_NODE_TYPE", node_id=node.get("id"))
+
+
+def _plan_hole(port, node, state_version, planned):
+    """Resolve the hole's face (+ normal) and, for the `at` / counterbore / countersink forms, declare
+    the sketch FRAME centred on the hole so every circle is drawn at (0, 0) and the existing frame
+    transform (compile loop) does the 3D -> sketch-2D mapping against the MEASURED rebuild frame."""
+    nid = node.get("id")
+    ref = node.get("ref") or {}
+    at = node.get("at")
+    if ref.get("face") is not None:
+        face_index, info = resolve_face_by_anchor(port, state_version, ref["face"]["near"], node_id=nid)
+        normal, fpoint = info["normal"], info["point"]
+    else:
+        face_index, info = resolve_top_face(port, state_version, node_id=nid)
+        normal, fpoint = (0.0, 1.0, 0.0), info.get("point")
+        if at is None and (node.get("cbore") or node.get("csink")):
+            at = [0.0, info["centroid_y"], 0.0]        # the origin projected onto the top face
+    if at is None:                                     # legacy: origin-centred top face, plain hole
+        return lowering.lower_hole(node, face_index, {"at": None, "normal": None})
+
+    nl = math.sqrt(sum(c * c for c in normal)) or 1.0
+    n = [c / nl for c in normal]
+    if fpoint is not None:
+        off = abs(sum((at[i] - fpoint[i]) * n[i] for i in range(3)))
+        if off > _AT_ON_FACE_TOL:
+            raise FeatureError("hole 'at' %s is %.4f mm off the face plane (|(at - face point) . normal| "
+                               "must be <= %g mm) — project the centre onto the face"
+                               % (list(at), off * 1000.0, _AT_ON_FACE_TOL * 1000.0),
+                               code="REFERENCE_MISMATCH", node_id=nid, step="resolve_hole_face")
+    # two in-plane axes: x = the world axis least aligned with n, projected; y = n x x
+    h = (1.0, 0.0, 0.0) if abs(n[0]) < 0.9 else (0.0, 1.0, 0.0)
+    d = sum(h[i] * n[i] for i in range(3))
+    x = [h[i] - d * n[i] for i in range(3)]
+    xl = math.sqrt(sum(c * c for c in x))
+    x = [c / xl for c in x]
+    y = [n[1] * x[2] - n[2] * x[1], n[2] * x[0] - n[0] * x[2], n[0] * x[1] - n[1] * x[0]]
+    planned["frame"] = {"origin": list(at), "xdir": x, "ydir": y}
+    plan = {"at": list(at), "normal": n}
+    if node.get("csink") and not lowering.csink_is_90(node):
+        # A non-90 countersink is a revolve cut: its cone profile must be sketched on a plane that
+        # CONTAINS the hole axis. Only the canonical datum planes are addressable, so pick the one
+        # whose normal is perpendicular to the axis and which passes through `at`.
+        for pname, pn in (("Front Plane", (0.0, 0.0, 1.0)), ("Right Plane", (1.0, 0.0, 0.0)),
+                          ("Top Plane", (0.0, 1.0, 0.0))):
+            if abs(_dot3(pn, n)) <= 1e-6 and abs(_dot3(pn, at)) <= _AT_ON_FACE_TOL:
+                plan["csink_plane"], plan["csink_plane_normal"] = pname, pn
+                break
+        else:
+            raise FeatureError("countersink angle other than 90 needs the hole axis in a canonical datum "
+                               "plane (Front/Right/Top): the hole at %s along %s lies in none of them. "
+                               "Use a 90-degree countersink or move the hole onto a datum plane."
+                               % (list(at), [round(c, 6) for c in n]),
+                               code="REFERENCE_MISMATCH", node_id=nid, step="plan_countersink")
+    return lowering.lower_hole(node, face_index, plan)
+
+
+_AT_ON_FACE_TOL = 1e-4      # 0.1 mm: how far a hole centre may sit off the resolved face plane
 
 
 def _fill_placeholders(op, last_resp, node_features, nid, ntype):

@@ -94,6 +94,50 @@ namespace SolidworksExecution.Services
                     results.Add($"edges={totalEdges}");
                     results.Add($"vertices={totalVerts}");
                 }
+                else if (analysisType == "bbox")
+                {
+                    // EXACT axis-aligned extents of all solid bodies: IBody2.GetExtremePoint along
+                    // +/-X/Y/Z. (IPartDoc.GetPartBox / IBody2.GetBodyBox are documented as
+                    // approximate and unfit for comparison, so they are NOT used.) Meters, model axes.
+                    var partDoc = modelDoc as IPartDoc;
+                    if (partDoc == null)
+                        return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
+                            "WRONG_DOCUMENT_TYPE", "analysis_type='bbox' requires a part document.");
+                    object[] bodies = partDoc.GetBodies2((int)swBodyType_e.swSolidBody, true) as object[];
+                    if (bodies == null || bodies.Length == 0)
+                        return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
+                            "ANALYSIS_FAILED", "analysis_type='bbox': the part has no solid body.");
+                    double[] lo = { double.MaxValue, double.MaxValue, double.MaxValue };
+                    double[] hi = { double.MinValue, double.MinValue, double.MinValue };
+                    double[][] dirs = { new[] { 1.0, 0, 0 }, new[] { 0, 1.0, 0 }, new[] { 0, 0, 1.0 } };
+                    foreach (var b in bodies)
+                    {
+                        var body = b as IBody2;
+                        if (body == null) continue;
+                        for (int ax = 0; ax < 3; ax++)
+                        {
+                            foreach (double sign in new[] { 1.0, -1.0 })
+                            {
+                                double ox, oy, oz;
+                                if (!body.GetExtremePoint(dirs[ax][0] * sign, dirs[ax][1] * sign,
+                                                          dirs[ax][2] * sign, out ox, out oy, out oz))
+                                    continue;
+                                double v = ax == 0 ? ox : (ax == 1 ? oy : oz);
+                                if (v < lo[ax]) lo[ax] = v;
+                                if (v > hi[ax]) hi[ax] = v;
+                            }
+                        }
+                    }
+                    if (lo[0] == double.MaxValue)
+                        return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
+                            "ANALYSIS_FAILED", "GetExtremePoint found no extent on any body.");
+                    var bb = new JObject();
+                    bb["min"] = new JArray(Math.Round(lo[0], 6), Math.Round(lo[1], 6), Math.Round(lo[2], 6));
+                    bb["max"] = new JArray(Math.Round(hi[0], 6), Math.Round(hi[1], 6), Math.Round(hi[2], 6));
+                    bb["size"] = new JArray(Math.Round(hi[0] - lo[0], 6), Math.Round(hi[1] - lo[1], 6),
+                                            Math.Round(hi[2] - lo[2], 6));
+                    results.Add(bb.ToString(Newtonsoft.Json.Formatting.None));
+                }
                 else if (analysisType == "bodies")
                 {
                     // Per-BODY fingerprint (multibody parts — e.g. a FLATTENED assembly STEP):
@@ -1369,6 +1413,27 @@ namespace SolidworksExecution.Services
                             var pt2 = surf.Evaluate((uv2[0] + uv2[1]) / 2.0, (uv2[2] + uv2[3]) / 2.0, 0, 0) as double[];
                             if (pt2 != null && pt2.Length >= 3)
                                 fj["point"] = new JArray { R6(pt2[0]), R6(pt2[1]), R6(pt2[2]) };
+                            // Cylinder extras for hole detection / drawing verification:
+                            //  u_span = angular extent (rad; ~6.2832 = full circle), v_span = extent along
+                            //  the axis (SolidWorks parameterises a cylinder's v along its axis — advisory),
+                            //  hole = the FACE normal (surface normal flipped by FaceInSurfaceSense, which
+                            //  is true when they oppose) points toward the axis, i.e. material is outside.
+                            if (fj["kind"]?.ToString() == "cylinder")
+                            {
+                                fj["u_span"] = R6(Math.Abs(uv2[1] - uv2[0]));
+                                fj["v_span"] = R6(Math.Abs(uv2[3] - uv2[2]));
+                                var o = fj["origin"] as JArray; var ax = fj["axis"] as JArray;
+                                if (pt2 != null && pt2.Length >= 6 && o != null && ax != null)
+                                {
+                                    double s = face.FaceInSurfaceSense() ? -1.0 : 1.0;
+                                    double[] fn = { s * pt2[3], s * pt2[4], s * pt2[5] };
+                                    double[] d = { pt2[0] - (double)o[0], pt2[1] - (double)o[1], pt2[2] - (double)o[2] };
+                                    double[] a = { (double)ax[0], (double)ax[1], (double)ax[2] };
+                                    double t = d[0] * a[0] + d[1] * a[1] + d[2] * a[2];
+                                    double[] rad = { d[0] - t * a[0], d[1] - t * a[1], d[2] - t * a[2] };
+                                    fj["hole"] = (fn[0] * rad[0] + fn[1] * rad[1] + fn[2] * rad[2]) < 0;
+                                }
+                            }
                         }
                     }
                     catch { }

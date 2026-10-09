@@ -611,6 +611,12 @@ namespace SolidworksExecution.Services
                     if (relSkippedVids.Count > 0) root["relations_skipped_views"] = relSkippedVids;
                 }
 
+                // include_extras (default false): ADD an `extras` object with the SolidWorks-native facts a
+                // DXF export loses (sheet projection/scale, view->model refs, notes, tolerances, typed
+                // dimension text, custom properties). Absent by default => default output is unchanged.
+                if (pAd?.Value<bool?>("include_extras") ?? false)
+                    root["extras"] = ReadDrawingExtras(drawingDoc, modelDoc);
+
                 // Read-only — does NOT bump state_version (mirrors AnalyzeModel).
                 return new ExecutionResponse
                 {
@@ -640,6 +646,303 @@ namespace SolidworksExecution.Services
                 return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
                     "UNEXPECTED_ERROR", ex.Message);
             }
+        }
+
+        // include_extras: SolidWorks-native facts the DXF export loses. READ-ONLY apart from transiently
+        // activating each sheet (the original active sheet is restored in finally). Every sub-read is its
+        // own try/catch; a failure is recorded in extras.errors[] and never sinks the response.
+        //   sheets[]  {name, paper_size, scale_num, scale_den, projection first_angle|third_angle,
+        //              width_m, height_m, template, views[], notes[]}
+        //   views[]   {name, type, scale, referenced_model, referenced_configuration, notes[], dimensions[]}
+        //   dimensions[] {name, value_si, diametric?, tol?{type,min_si?,max_si?,fit_type?,hole_fit?,shaft_fit?},
+        //              text?{prefix,suffix,above,below}}
+        //   notes[]   {text, pos[x,y] (sheet metres)}
+        //   custom_properties {name: value}
+        private JObject ReadDrawingExtras(IDrawingDoc drawingDoc, IModelDoc2 modelDoc)
+        {
+            var extras = new JObject();
+            var errors = new JArray();
+            var sheetsArr = new JArray();
+            extras["sheets"] = sheetsArr;
+            extras["errors"] = errors;
+
+            string originalSheet = null;
+            try
+            {
+                var cur = drawingDoc.GetCurrentSheet() as ISheet;
+                if (cur != null) originalSheet = cur.GetName();
+            }
+            catch (Exception ex) { errors.Add("current_sheet: " + ex.Message); }
+
+            string[] sheetNames = null;
+            try
+            {
+                var rawNames = drawingDoc.GetSheetNames() as object[];
+                if (rawNames != null)
+                {
+                    sheetNames = new string[rawNames.Length];
+                    for (int i = 0; i < rawNames.Length; i++) sheetNames[i] = rawNames[i] as string;
+                }
+                else
+                {
+                    sheetNames = drawingDoc.GetSheetNames() as string[];
+                }
+            }
+            catch (Exception ex) { errors.Add("sheet_names: " + ex.Message); }
+
+            try
+            {
+                if (sheetNames != null)
+                {
+                    foreach (var sn in sheetNames)
+                    {
+                        if (string.IsNullOrEmpty(sn)) continue;
+                        try
+                        {
+                            var sj = new JObject();
+                            sj["name"] = sn;
+                            bool activated = false;
+                            try { activated = drawingDoc.ActivateSheet(sn); }
+                            catch (Exception ex) { errors.Add("activate_sheet[" + sn + "]: " + ex.Message); }
+                            if (!activated)
+                            {
+                                sj["skipped"] = "ActivateSheet failed";
+                                sheetsArr.Add(sj);
+                                continue;
+                            }
+                            ReadSheetExtras(drawingDoc, sj, sn, errors);
+                            sheetsArr.Add(sj);
+                        }
+                        catch (Exception ex) { errors.Add("sheet[" + sn + "]: " + ex.Message); }
+                    }
+                }
+            }
+            finally
+            {
+                if (originalSheet != null)
+                {
+                    try { drawingDoc.ActivateSheet(originalSheet); }
+                    catch (Exception ex) { errors.Add("restore_sheet: " + ex.Message); }
+                }
+            }
+
+            // Drawing-level custom properties (document scope, not configuration-specific).
+            try
+            {
+                var mgr = modelDoc.Extension.get_CustomPropertyManager("");
+                if (mgr != null)
+                {
+                    var names = mgr.GetNames() as object[];
+                    var props = new JObject();
+                    if (names != null)
+                    {
+                        foreach (var nObj in names)
+                        {
+                            string pn = nObj as string;
+                            if (string.IsNullOrEmpty(pn)) continue;
+                            try
+                            {
+                                string val, resolved;
+                                bool wasResolved, linked;
+                                mgr.Get6(pn, false, out val, out resolved, out wasResolved, out linked);
+                                props[pn] = wasResolved && resolved != null ? resolved : val;
+                            }
+                            catch (Exception ex) { errors.Add("custom_property[" + pn + "]: " + ex.Message); }
+                        }
+                    }
+                    extras["custom_properties"] = props;
+                }
+            }
+            catch (Exception ex) { errors.Add("custom_properties: " + ex.Message); }
+
+            return extras;
+        }
+
+        // One sheet's extras (the sheet is already the ACTIVE one). Properties, template, then every view
+        // (view 0 from GetFirstView is the sheet container: its notes are the sheet-level notes).
+        private void ReadSheetExtras(IDrawingDoc drawingDoc, JObject sj, string sheetName, JArray errors)
+        {
+            try
+            {
+                var sheet = drawingDoc.GetCurrentSheet() as ISheet;
+                if (sheet != null)
+                {
+                    try
+                    {
+                        // [paperSize, templateIn, scale1, scale2, firstAngle, width, height, sameCustomProp]
+                        var pr = sheet.GetProperties2() as double[];
+                        if (pr != null && pr.Length >= 7)
+                        {
+                            sj["paper_size"] = (int)pr[0];
+                            sj["scale_num"] = R6(pr[2]);
+                            sj["scale_den"] = R6(pr[3]);
+                            sj["projection"] = pr[4] != 0.0 ? "first_angle" : "third_angle";
+                            sj["width_m"] = R6(pr[5]);
+                            sj["height_m"] = R6(pr[6]);
+                        }
+                    }
+                    catch (Exception ex) { errors.Add("sheet_properties[" + sheetName + "]: " + ex.Message); }
+                    try { sj["template"] = sheet.GetTemplateName(); }
+                    catch (Exception ex) { errors.Add("sheet_template[" + sheetName + "]: " + ex.Message); }
+                }
+            }
+            catch (Exception ex) { errors.Add("sheet_object[" + sheetName + "]: " + ex.Message); }
+
+            var viewsArr = new JArray();
+            var sheetNotes = new JArray();
+            sj["views"] = viewsArr;
+            sj["notes"] = sheetNotes;
+            try
+            {
+                object viewObj = drawingDoc.GetFirstView();
+                bool first = true;
+                int guard = 0;
+                while (viewObj != null && guard++ < 2000)
+                {
+                    var view = viewObj as IView;
+                    if (view == null) break;
+                    string vname = null;
+                    try { vname = view.Name; } catch { }
+                    if (first)
+                    {
+                        // The sheet container: only its notes matter.
+                        ReadViewNotes(view, sheetNotes, errors, "sheet_notes[" + sheetName + "]");
+                        first = false;
+                    }
+                    else
+                    {
+                        var vj = new JObject();
+                        vj["name"] = vname;
+                        try { vj["type"] = view.Type; } catch (Exception ex) { errors.Add("view_type[" + vname + "]: " + ex.Message); }
+                        try { vj["scale"] = R6(view.ScaleDecimal); } catch (Exception ex) { errors.Add("view_scale[" + vname + "]: " + ex.Message); }
+                        try { vj["referenced_model"] = view.GetReferencedModelName(); }
+                        catch (Exception ex) { errors.Add("view_model[" + vname + "]: " + ex.Message); }
+                        try { vj["referenced_configuration"] = view.ReferencedConfiguration; }
+                        catch (Exception ex) { errors.Add("view_config[" + vname + "]: " + ex.Message); }
+                        var vNotes = new JArray();
+                        ReadViewNotes(view, vNotes, errors, "view_notes[" + vname + "]");
+                        vj["notes"] = vNotes;
+                        vj["dimensions"] = ReadViewDimensionExtras(view, errors, vname);
+                        viewsArr.Add(vj);
+                    }
+                    object nextView = null;
+                    try { nextView = view.GetNextView(); } catch { nextView = null; }
+                    viewObj = nextView;
+                }
+            }
+            catch (Exception ex) { errors.Add("views[" + sheetName + "]: " + ex.Message); }
+        }
+
+        // Every INote in a view/sheet container: {text, pos:[x,y]} (sheet metres). GetFirstNote2/INote.GetNext.
+        private void ReadViewNotes(IView view, JArray into, JArray errors, string tag)
+        {
+            try
+            {
+                object noteObj = view.GetFirstNote2();
+                int guard = 0;
+                while (noteObj != null && guard++ < 2000)
+                {
+                    var note = noteObj as INote;
+                    if (note == null) break;
+                    try
+                    {
+                        var nj = new JObject();
+                        nj["text"] = note.GetText();
+                        try
+                        {
+                            var ann = note.GetAnnotation() as IAnnotation;
+                            var pos = ann != null ? ann.GetPosition() as double[] : null;
+                            if (pos != null && pos.Length >= 2)
+                                nj["pos"] = new JArray { R6(pos[0]), R6(pos[1]) };
+                        }
+                        catch { }
+                        into.Add(nj);
+                    }
+                    catch (Exception ex) { errors.Add(tag + ": " + ex.Message); }
+                    object nextNote = null;
+                    try { nextNote = note.GetNext(); } catch { nextNote = null; }
+                    noteObj = nextNote;
+                }
+            }
+            catch (Exception ex) { errors.Add(tag + ": " + ex.Message); }
+        }
+
+        // Per-view dimension extras: same traversal as ReadViewDimensions (GetFirstDisplayDimension5/GetNext5)
+        // plus tolerance and the typed text parts. swDimensionTextParts_e inlined (ADR-018): 1 prefix,
+        // 2 suffix, 3 callout above, 4 callout below.
+        private JArray ReadViewDimensionExtras(IView view, JArray errors, string vname)
+        {
+            var arr = new JArray();
+            object dispObj = null;
+            try { dispObj = view.GetFirstDisplayDimension5(); }
+            catch (Exception ex) { errors.Add("view_dims[" + vname + "]: " + ex.Message); return arr; }
+            int guard = 0;
+            while (dispObj != null && guard++ < 1000)
+            {
+                var disp = dispObj as IDisplayDimension;
+                if (disp != null)
+                {
+                    string dimName = null;
+                    try
+                    {
+                        var dim = disp.GetDimension2(0) as IDimension;
+                        if (dim != null)
+                        {
+                            var dj = new JObject();
+                            dimName = dim.FullName;
+                            dj["name"] = dimName;
+                            double val = dim.Value;
+                            try { val = dim.SystemValue; } catch { }
+                            dj["value_si"] = R6(val);
+                            try { if (disp.Diametric) dj["diametric"] = true; } catch { }
+
+                            try
+                            {
+                                var tol = dim.Tolerance as IDimensionTolerance;
+                                if (tol != null)
+                                {
+                                    int tType = tol.Type;           // swTolType_e; 0 = none
+                                    if (tType != 0)
+                                    {
+                                        var tj = new JObject();
+                                        tj["type"] = tType;
+                                        double tv;
+                                        try { tol.GetMaxValue2(out tv); tj["max_si"] = R6(tv); } catch { }
+                                        try { tol.GetMinValue2(out tv); tj["min_si"] = R6(tv); } catch { }
+                                        if (tType == 7 || tType == 8 || tType == 9)   // swTolFIT / FITWITHTOL / FITTOLONLY
+                                        {
+                                            try { tj["fit_type"] = tol.FitType; } catch { }
+                                            try { tj["hole_fit"] = tol.GetHoleFitValue(); } catch { }
+                                            try { tj["shaft_fit"] = tol.GetShaftFitValue(); } catch { }
+                                        }
+                                        dj["tol"] = tj;
+                                    }
+                                }
+                            }
+                            catch (Exception ex) { errors.Add("dim_tol[" + dimName + "]: " + ex.Message); }
+
+                            try
+                            {
+                                var txt = new JObject();
+                                string t;
+                                t = disp.GetText(1); if (!string.IsNullOrEmpty(t)) txt["prefix"] = t;
+                                t = disp.GetText(2); if (!string.IsNullOrEmpty(t)) txt["suffix"] = t;
+                                t = disp.GetText(3); if (!string.IsNullOrEmpty(t)) txt["above"] = t;
+                                t = disp.GetText(4); if (!string.IsNullOrEmpty(t)) txt["below"] = t;
+                                if (txt.Count > 0) dj["text"] = txt;
+                            }
+                            catch (Exception ex) { errors.Add("dim_text[" + dimName + "]: " + ex.Message); }
+
+                            arr.Add(dj);
+                        }
+                    }
+                    catch (Exception ex) { errors.Add("dim[" + (dimName ?? "?") + "@" + vname + "]: " + ex.Message); }
+                }
+                object next = null;
+                try { next = disp != null ? disp.GetNext5() : null; } catch { next = null; }
+                dispObj = next;
+            }
+            return arr;
         }
 
         // Per-view display dimensions, reusing the same IDisplayDimension→IDimension reader shape as the

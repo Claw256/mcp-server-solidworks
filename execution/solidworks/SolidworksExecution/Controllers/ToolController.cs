@@ -154,6 +154,7 @@ namespace SolidworksExecution.Controllers
                 case "add_sketch_constraint":  return _service.AddSketchConstraint(request);
                 case "add_edge_feature":       return _service.AddEdgeFeature(request);
                 case "create_rib":             return _service.CreateRib(request);
+                case "hole_wizard":            return _service.HoleWizard(request);
                 case "create_drawing":         return _service.CreateDrawing(request);
                 case "add_drawing_view":       return _service.AddDrawingView(request);
                 case "add_flat_pattern_view":  return _service.AddFlatPatternView(request);
@@ -164,6 +165,7 @@ namespace SolidworksExecution.Controllers
                 case "add_section_view":       return _service.AddSectionView(request);
                 case "save_document":          return _service.SaveDocument(request);
                 case "export_document":        return _service.ExportDocument(request);
+                case "export_image":           return _service.ExportImage(request);
                 case "batch_export":           return _service.BatchExport(request);
                 case "extrude_feature":        return _service.ExtrudeFeature(request);
                 case "verify_state":           return _service.VerifyState(request);

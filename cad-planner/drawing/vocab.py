@@ -50,7 +50,15 @@ GATE_REASONS = frozenset({
     "thickness_unresolved",     # no thickness source
     "thickness_ambiguous",      # more than one, and they disagree
     "fixed_point_ambiguous",    # no safe point on the blank that every bend can fold around
+    "units_not_mm",             # unknown $INSUNITS code, or a non-mm sheet the reader did not convert
+    "mixed_bends_in_group",     # same-direction bends with different angle/radius; one IR bend can't carry both
 })
+
+# $INSUNITS code -> millimetres per drawing unit. 0 (unitless) and 4 (mm) are treated as mm; every
+# other KNOWN code is converted to true mm by dxf_read.read_doc at the document; a code missing
+# from this table is not converted and the direct-build gate refuses it (units_not_mm).
+INSUNITS_MM = {0: 1.0, 1: 25.4, 2: 304.8, 3: 1609344.0, 4: 1.0, 5: 10.0, 6: 1000.0, 7: 1e6,
+               8: 25.4e-6, 9: 0.0254, 10: 914.4, 13: 1e-3, 14: 100.0, 15: 1e4}
 
 # The subset of gate reasons that are also `_resolve_thickness` states, so that helper's return
 # values cannot drift away from the gate's vocabulary.

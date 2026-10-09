@@ -230,6 +230,38 @@ def check_gate_and_lowering():
     return errors
 
 
+def check_safety_gates():
+    """Phase-1 guards: a non-mm sheet and a mixed-bend direction group must NOT build directly."""
+    import copy
+    errors = []
+    cfg = _config()
+    base = _load("s1_flat.json")
+    if not lowering.assess(base, cfg)["direct"]:
+        return ["s1_flat must be direct-buildable for the safety-gate checks"]
+
+    art = copy.deepcopy(base)
+    art["sheet"]["units"], art["sheet"]["units_mm_per_unit"] = 1, 25.4      # inches
+    got = lowering.assess(art, cfg)
+    if got["direct"] or got["reason"] != "units_not_mm":
+        errors.append("inch sheet: expected units_not_mm, got %s" % got)
+
+    art = copy.deepcopy(base)
+    art["sheet"].pop("units_mm_per_unit", None)                              # old artifacts stay valid
+    if not lowering.assess(art, cfg)["direct"]:
+        errors.append("artifact without units_mm_per_unit must still gate as mm")
+
+    art = copy.deepcopy(base)
+    paired = [b for b in art["bend_notes"] if b.get("bend_line")]
+    if len(paired) >= 2:
+        for b in paired:
+            b["dir"] = paired[0]["dir"]                                      # force one group
+        paired[1]["angle_deg"] = paired[0]["angle_deg"] + 15.0
+        got = lowering.assess(art, cfg)
+        if got["direct"] or got["reason"] != "mixed_bends_in_group":
+            errors.append("mixed group: expected mixed_bends_in_group, got %s" % got)
+    return errors
+
+
 def check_s1_numbers():
     """The one fixture whose absolute numbers are pinned: a units or arc-area regression must not
     be able to hide behind matching loop counts."""
@@ -571,6 +603,7 @@ _CHECKS = (("contract drift", check_contract),
            ("contour chaining", check_chaining),
            ("bend pairing", check_pairing),
            ("gate + lowering", check_gate_and_lowering),
+           ("safety gates", check_safety_gates),
            ("s-1 absolute numbers", check_s1_numbers),
            ("view graph", check_viewgraph),
            ("curve fit", check_curvefit),

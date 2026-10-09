@@ -63,6 +63,47 @@ BEND_POSITIONS = frozenset(("centerline", "material_inside", "material_outside",
 EDGE_FLANGE_POSITIONS = BEND_POSITIONS | frozenset(("bend_sharp",))
 
 
+# Per-type allow-list of node keys. A key outside it is almost always a typo or a hallucinated
+# param (`reverse` for `reversed`, `dia` for `diameter`) that would otherwise be IGNORED and build
+# the wrong part. Keys starting with '_' (e.g. `_intent`) and the free-text COMMON_KEYS are
+# annotation, never geometry.
+COMMON_KEYS = frozenset(("id", "type", "hint", "comment", "note", "name", "label", "intent"))
+NODE_KEYS = {
+    "box": {"ref", "width", "depth", "height"},
+    "sketch": {"ref", "profile", "frame"},
+    "extrude": {"sketch", "operation", "depth", "through", "end", "up_to", "reversed"},
+    "hole": {"ref", "diameter", "depth", "at", "cbore", "csink", "thread"},
+    "revolve": {"sketch", "axis", "angle", "operation"},
+    "rib": {"sketch", "thickness", "two_sided", "reverse_thickness_dir", "reverse_material_dir",
+            "is_norm_to_sketch"},
+    "sweep": {"sketch", "path"},
+    "linear_pattern": {"feature", "direction", "spacing", "count", "flip"},
+    "circular_pattern": {"feature", "axis", "count", "angle_deg", "equal_spacing"},
+    "fillet": {"radius", "edges"},
+    "chamfer": {"chamfer_type", "distance", "distance2", "angle", "flip", "edges"},
+    "sheet_metal": {"sketch", "thickness", "bend_radius", "k_factor", "reverse_thickness",
+                    "symmetric_thickness"},
+    "sketched_bend": {"sketch", "angle", "radius", "position", "flip", "fixed"},
+    "edge_flange": {"edge", "angle", "length", "frame", "profile", "radius", "position", "flip"},
+    "mirror": {"plane", "features"},
+    "component": {"source", "transform", "fixed", "config"},
+    "mate": {"mate_type", "alignment", "value", "flip", "sides"},
+    "loft": {"profiles"},
+}
+# Sanity bounds. The IR is METERS; a graph written in millimetres trips MAX_LENGTH_M on any
+# ordinary dimension, and a degree value in a RADIANS field trips MAX_ANGLE_RAD.
+MAX_LENGTH_M = 10.0
+MAX_ANGLE_RAD = 2 * 3.141592653589793 + 1e-6
+ANGLE_KEYS = {"revolve": ("angle",), "chamfer": ("angle",), "sketched_bend": ("angle",),
+              "edge_flange": ("angle",)}
+LENGTH_KEYS = {"box": ("width", "depth", "height"), "extrude": ("depth",), "fillet": ("radius",),
+               "chamfer": ("distance", "distance2"), "hole": ("diameter",),
+               "sheet_metal": ("thickness", "bend_radius"), "sketched_bend": ("radius",),
+               "rib": ("thickness",), "linear_pattern": ("spacing",),
+               "edge_flange": ("length", "radius")}
+_CLOSURE_TOL = 1e-6
+
+
 def _is_pos_number(v):
     return isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
 
@@ -137,6 +178,13 @@ def validate(graph):
 
         label = "%s (%s '%s')" % (where, ntype, nid)
 
+        allowed = NODE_KEYS.get(ntype, set()) | COMMON_KEYS
+        for key in sorted(node):
+            if key not in allowed and not str(key).startswith("_"):
+                errors.append("%s: unknown field '%s' — it would be ignored. Valid fields for a %s: %s."
+                              % (label, key, ntype, sorted(NODE_KEYS.get(ntype, set()))))
+        _check_sanity(node, ntype, label, errors)
+
         if ntype == "box":
             _check_datum(node, label, errors)
             for k in ("width", "depth", "height"):
@@ -176,24 +224,7 @@ def validate(graph):
             _check_extrude_end(node, op, label, errors)
 
         elif ntype == "hole":
-            ref = node.get("ref") or {}
-            nf = ref.get("node_face") or {}
-            tgt = nf.get("node")
-            if not isinstance(tgt, str) or not tgt:
-                errors.append("%s: ref.node_face.node (an earlier node id) is required." % label)
-            elif seen.get(tgt) not in BODY_PRODUCERS:
-                errors.append("%s: ref.node_face.node '%s' must reference an earlier box/extrude node." % (label, tgt))
-            if nf.get("selector") not in FACE_SELECTORS:
-                errors.append("%s: ref.node_face.selector %r unsupported in v0.5 (only %s)."
-                              % (label, nf.get("selector"), sorted(FACE_SELECTORS)))
-            if ref.get("position") not in POSITIONS:
-                errors.append("%s: ref.position %r unsupported in v0.5 (only %s)."
-                              % (label, ref.get("position"), sorted(POSITIONS)))
-            if not _is_pos_number(node.get("diameter")):
-                errors.append("%s: 'diameter' must be a positive number (meters)." % label)
-            depth = node.get("depth")
-            if depth not in THROUGH_DEPTHS:
-                errors.append("%s: 'depth' must be 'through_all' in v0.5 (got %r)." % (label, depth))
+            _check_hole(node, label, seen, errors)
 
         elif ntype == "revolve":
             sk = node.get("sketch")
@@ -215,6 +246,9 @@ def validate(graph):
             angle = node.get("angle")
             if angle is not None and not _is_pos_number(angle):
                 errors.append("%s: 'angle' must be a positive number (RADIANS; omit for a full 360°)." % label)
+            if node.get("operation") not in (None, "boss", "cut"):
+                errors.append("%s: revolve 'operation' must be 'boss' (default) or 'cut' (got %r)."
+                              % (label, node.get("operation")))
 
         elif ntype == "rib":
             sk = node.get("sketch")
@@ -549,7 +583,204 @@ def validate(graph):
         if nid:
             seen[nid] = ntype
 
+    # Sketch closure: only a sketch consumed IMMEDIATELY by an extrude must close (bend lines,
+    # sweep paths, rib spines and revolve axes are open by design).
+    for pos, node in enumerate(nodes[:-1]):
+        nxt = nodes[pos + 1]
+        if (isinstance(node, dict) and node.get("type") == "sketch" and isinstance(nxt, dict)
+                and nxt.get("type") == "extrude" and nxt.get("sketch") == node.get("id")
+                and isinstance(node.get("profile"), list)):
+            _check_closure(node["profile"], "nodes[%d] (sketch '%s')" % (pos, node.get("id")), errors)
+
     return errors
+
+
+def _num_items(value):
+    """Yield every number inside a (possibly nested) node field."""
+    if _is_number(value):
+        yield value
+    elif isinstance(value, dict):
+        for v in value.values():
+            for n in _num_items(v):
+                yield n
+    elif isinstance(value, list):
+        for v in value:
+            for n in _num_items(v):
+                yield n
+
+
+def _check_sanity(node, ntype, label, errors):
+    """Unit / angle sanity — catches millimetres written into a METERS graph and degrees written
+    into a RADIANS field, both of which are structurally valid and silently build the wrong part."""
+    if ntype in ASSEMBLY_NODE_TYPES:
+        return
+    for key in LENGTH_KEYS.get(ntype, ()):
+        v = node.get(key)
+        if _is_number(v) and abs(v) > MAX_LENGTH_M:
+            errors.append("%s: '%s' = %g is over %g m — the IR is METERS (did you write millimetres? "
+                          "100 mm = 0.1)." % (label, key, v, MAX_LENGTH_M))
+    if ntype == "hole":
+        for key in ("at", "cbore", "csink", "depth"):
+            v = node.get(key)
+            if isinstance(v, dict):
+                v = {k: s for k, s in v.items() if k != "angle"}     # an angle is not a length
+            if any(abs(n) > MAX_LENGTH_M for n in _num_items(v)):
+                errors.append("%s: '%s' has a value over %g m — the IR is METERS (did you write "
+                              "millimetres?)." % (label, key, MAX_LENGTH_M))
+        ref = node.get("ref")
+        face = ref.get("face") if isinstance(ref, dict) else None
+        if isinstance(face, dict) and any(abs(n) > MAX_LENGTH_M for n in _num_items(face.get("near"))):
+            errors.append("%s: ref.face.near is over %g m — the IR is METERS." % (label, MAX_LENGTH_M))
+    ref = node.get("ref")
+    if isinstance(ref, dict) and _is_number(ref.get("offset")) and abs(ref["offset"]) > MAX_LENGTH_M:
+        errors.append("%s: ref.offset = %g is over %g m — the IR is METERS." % (label, ref["offset"], MAX_LENGTH_M))
+    if ntype in ("sketch", "edge_flange") and isinstance(node.get("profile"), list):
+        for j, prim in enumerate(node["profile"]):
+            if not isinstance(prim, dict):
+                continue
+            for k, v in prim.items():
+                if k not in ("dir", "kind", "construction") and any(abs(n) > MAX_LENGTH_M for n in _num_items(v)):
+                    errors.append("%s.profile[%d]: '%s' has a value over %g m — the IR is METERS "
+                                  "(did you write millimetres?)." % (label, j, k, MAX_LENGTH_M))
+                    break
+    for key in ANGLE_KEYS.get(ntype, ()):
+        v = node.get(key)
+        if _is_number(v) and v > MAX_ANGLE_RAD:
+            errors.append("%s: '%s' = %g exceeds 2π — angles are RADIANS (90° = 1.5708)." % (label, key, v))
+
+
+def _close(a, b):
+    return abs(a[0] - b[0]) <= _CLOSURE_TOL and abs(a[1] - b[1]) <= _CLOSURE_TOL
+
+
+def _check_closure(profile, label, errors):
+    """Line/arc/spline endpoints must pair up (each shared by >= 2 segments) and an arc's start/end
+    must be equidistant from its centre. Circles, rectangles and ellipses are self-closed."""
+    ends = []
+    for j, prim in enumerate(profile):
+        if not isinstance(prim, dict) or prim.get("construction") is True:
+            continue
+        kind = prim.get("kind")
+        try:
+            if kind == "line":
+                ends += [((prim["x1"], prim["y1"]), j), ((prim["x2"], prim["y2"]), j)]
+            elif kind == "arc":
+                a, b, c = (prim["x1"], prim["y1"]), (prim["x2"], prim["y2"]), (prim["cx"], prim["cy"])
+                r1, r2 = math_hypot(a, c), math_hypot(b, c)
+                if abs(r1 - r2) > max(1e-6, 1e-4 * max(r1, r2)):
+                    errors.append("%s.profile[%d]: arc start/end are %.6g and %.6g m from its centre — "
+                                  "not a circular arc." % (label, j, r1, r2))
+                ends += [(a, j), (b, j)]
+            elif kind == "spline" and isinstance(prim.get("points"), list) and len(prim["points"]) >= 4:
+                p = prim["points"]
+                ends += [((p[0], p[1]), j), ((p[-2], p[-1]), j)]
+        except (KeyError, TypeError):
+            return            # structural errors are reported by _check_profile_prim
+    for i, (pt, j) in enumerate(ends):
+        if not any(k != i and _close(pt, other) for k, (other, _j) in enumerate(ends)):
+            errors.append("%s: profile[%d] has an unconnected endpoint (%.6g, %.6g) — the contour "
+                          "does not close, so the extrude would fail or build a sliver."
+                          % (label, j, pt[0], pt[1]))
+            return
+
+
+def math_hypot(a, b):
+    return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
+
+
+CSINK_ANGLE_TOL = 0.5 * 3.141592653589793 / 180.0     # 0.5 degrees
+
+
+def _check_hole(node, label, seen, errors):
+    """hole v2 (IR 0.8): a hole on the 'top' face of an earlier box/extrude (legacy form) OR on ANY
+    planar face given by an anchor, at any point `at` on that face, blind or through, optionally
+    counterbored / countersunk / tapped.
+
+        ref  = {node_face:{node, selector:'top'}}   |   {face:{near:[x,y,z]}}
+        position 'center' (legacy: the origin-centred top face) | at [x,y,z] (a point ON the face)
+        depth 'through_all' | metres (blind, measured from the face)
+        cbore {diameter, depth} | csink {diameter, angle (rad included; non-90 needs the axis in a datum plane)}  (mutually exclusive)
+        thread {size, depth?, cosmetic?}  -- RECORDED, not modelled: the hole is cut at `diameter`
+                                             (the tap-drill size), the thread is declared in the note."""
+    ref = node.get("ref")
+    if not isinstance(ref, dict):
+        errors.append("%s: 'ref' is required: {node_face:{node, selector:'top'}} or {face:{near:[x,y,z]}}." % label)
+        ref = {}
+    nf, face = ref.get("node_face"), ref.get("face")
+    if (nf is None) == (face is None):
+        errors.append("%s: give exactly one of ref.node_face (the 'top' face of an earlier box/extrude) "
+                      "or ref.face {near:[x,y,z]} (any planar face)." % label)
+    if nf is not None:
+        nf = nf if isinstance(nf, dict) else {}
+        tgt = nf.get("node")
+        if not isinstance(tgt, str) or not tgt:
+            errors.append("%s: ref.node_face.node (an earlier node id) is required." % label)
+        elif seen.get(tgt) not in BODY_PRODUCERS:
+            errors.append("%s: ref.node_face.node '%s' must reference an earlier box/extrude node." % (label, tgt))
+        if nf.get("selector") not in FACE_SELECTORS:
+            errors.append("%s: ref.node_face.selector %r unsupported (only %s) — use ref.face for any other face."
+                          % (label, nf.get("selector"), sorted(FACE_SELECTORS)))
+    if face is not None and (not isinstance(face, dict) or not _is_point3(face.get("near"))):
+        errors.append("%s: ref.face must be {near:[x,y,z]} — a point ON the target planar face's plane." % label)
+
+    at = node.get("at")
+    if at is not None and not _is_point3(at):
+        errors.append("%s: 'at' must be [x, y, z] (meters) — the hole centre, a point ON the face." % label)
+    pos = ref.get("position")
+    if pos is not None and pos not in POSITIONS:
+        errors.append("%s: ref.position %r unsupported (only %s) — use 'at' for any other centre."
+                      % (label, pos, sorted(POSITIONS)))
+    if at is None and face is not None:
+        errors.append("%s: ref.face needs 'at' [x,y,z] — where on the face the hole goes." % label)
+    if at is None and nf is not None and pos not in POSITIONS:
+        errors.append("%s: give ref.position 'center' or 'at' [x,y,z]." % label)
+    if at is not None and pos is not None:
+        errors.append("%s: 'at' and ref.position are mutually exclusive." % label)
+
+    dia = node.get("diameter")
+    if not _is_pos_number(dia):
+        errors.append("%s: 'diameter' must be a positive number (meters; for a tapped hole the tap-drill size)." % label)
+    depth = node.get("depth")
+    through = depth in THROUGH_DEPTHS
+    if not through and not _is_pos_number(depth):
+        errors.append("%s: 'depth' must be 'through_all' or a positive number (meters, blind)." % label)
+
+    cbore, csink, thread = node.get("cbore"), node.get("csink"), node.get("thread")
+    if cbore is not None and csink is not None:
+        errors.append("%s: 'cbore' and 'csink' are mutually exclusive." % label)
+    if cbore is not None:
+        if (not isinstance(cbore, dict) or not _is_pos_number(cbore.get("diameter"))
+                or not _is_pos_number(cbore.get("depth"))):
+            errors.append("%s: cbore must be {diameter, depth} (positive meters)." % label)
+        else:
+            if _is_pos_number(dia) and cbore["diameter"] <= dia:
+                errors.append("%s: cbore.diameter must exceed the hole diameter." % label)
+            if not through and _is_pos_number(depth) and cbore["depth"] >= depth:
+                errors.append("%s: cbore.depth must be less than the total hole depth." % label)
+    if csink is not None:
+        if not isinstance(csink, dict) or not _is_pos_number(csink.get("diameter")):
+            errors.append("%s: csink must be {diameter, angle?} — diameter at the face (positive meters)." % label)
+        else:
+            if _is_pos_number(dia) and csink["diameter"] <= dia:
+                errors.append("%s: csink.diameter must exceed the hole diameter." % label)
+            ang = csink.get("angle", 3.141592653589793 / 2)
+            if not _is_number(ang) or not (0.0 < ang < 3.141592653589793):
+                errors.append("%s: csink.angle must be the INCLUDED angle in RADIANS, between 0 and pi "
+                              "(default 1.5708 = 90 degrees). Angles other than 90 are cut as a revolve and "
+                              "need the hole axis in a canonical datum plane (checked at build time)." % label)
+    if thread is not None:
+        if not isinstance(thread, dict) or not isinstance(thread.get("size"), str) or not thread.get("size"):
+            errors.append("%s: thread must be {size:'M6x1', depth?, cosmetic?} — recorded only, not modelled." % label)
+        else:
+            td = thread.get("depth")
+            if td is not None and td not in THROUGH_DEPTHS and not _is_pos_number(td):
+                errors.append("%s: thread.depth must be 'through_all' or positive meters." % label)
+    for key in ("cbore", "csink", "thread"):
+        sub = node.get(key)
+        if isinstance(sub, dict):
+            extra = sorted(set(sub) - {"diameter", "depth", "angle", "size", "cosmetic"})
+            if extra:
+                errors.append("%s: unknown field(s) %s in %s." % (label, extra, key))
 
 
 def _check_extrude_end(node, op, label, errors):
@@ -625,6 +856,9 @@ def _check_profile_prim(prim, label, errors):
         for k in ("width", "height"):
             if not _is_pos_number(prim.get(k)):
                 errors.append("%s: rectangle '%s' must be a positive number." % (label, k))
+        for k in ("cx", "cy"):                    # centre offset; absent = centred on the origin
+            if prim.get(k) is not None and not _is_number(prim.get(k)):
+                errors.append("%s: rectangle '%s' must be a number (centre, meters)." % (label, k))
     elif kind == "circle":
         if not _is_pos_number(prim.get("diameter")):
             errors.append("%s: circle 'diameter' must be a positive number." % label)

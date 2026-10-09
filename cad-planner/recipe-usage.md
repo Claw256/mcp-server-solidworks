@@ -86,7 +86,9 @@ original — these rules replace the readback discipline there. C1–C5 still ap
   pattern OF a pattern (a `linear_pattern` seeding on an earlier `linear_pattern` — the tool
   has no second direction).
 - **Know what is NOT expressible** (state it, don't improvise a lookalike): sweep/revolve/loft
-  are BOSS-only; no shell/draft/dome/wrap/hole-wizard/thread; `linear_pattern` is
+  are BOSS-only; no shell/draft/dome/wrap/hole-wizard/real threads; `hole` covers any planar
+  face (`ref.face` + `at`), blind or through, counterbore, 90-degree countersink and a recorded
+  thread note; `circular_pattern` axes pass through the origin; `linear_pattern` is
   single-direction (+`flip`); mirror planes are canonical datums only. If the intent needs one
   of these, report the gap (C5).
 - **Self-verify without an original:** before submitting, COMPUTE the expected outcome from
@@ -543,11 +545,11 @@ caught a break view's true length (338 gives 0.464 kg, the drawn 125 gives 0.172
 material-REMOVING detail too, because the stated weight includes it. Do NOT go looking for a weight
 that is not there — many drawings have none. Use it when it exists.
 
-**R21 — Sheet metal is decided by DECLARATION first, thickness second.** If the title block says so
-(`Blech`, `plate`, and their equivalents), build it as sheet metal. If it does not, a part of
-**thickness ≤ 20 mm** that is otherwise a single extrude is sheet metal too — building it as a base
-flange is more useful downstream (flat pattern, bends, manufacturing intent) than a plain boss. Above
-20 mm there is no rule: decide, and say which way you decided and why.
+**R21 — Sheet metal is decided by DECLARATION, never by thickness alone.** Build sheet metal only when the drawing
+declares it: a flat pattern with bend notes, "sheet metal"/`Blech`/gauge in the title block or notes, or bend radii
+and a K-factor. A thin plate with holes, pockets or machined edges and NO such declaration is a MACHINED plate:
+build it as a plain extrude. Thickness alone (for example ≤ 20 mm) is not evidence; guessing "sheet metal"
+removes the very features the drawing shows. When it is genuinely unclear, build the plain extrude and say so.
 
 **R22 — With no UP/DOWN note, bend DIRECTION comes from the projection, not from the line's class.**
 `bend_class_map` (visible=UP, hidden=DOWN) is a SolidWorks flat-pattern convention and only applies
@@ -565,6 +567,54 @@ graph blank → base flange → every bend → only then the edge treatments. Se
 afterwards costs more (each long edge is split by every bend it crosses, so one weld preparation
 became 16 edges instead of 4) — pay it. If the edge treatment is easier to express on the flat, that
 is not a reason: it will not build.
+## machined_from_image — PDF / image drawing → machined part
+
+Read this for a drawing you SEE (a PDF page, a photo, a scan) rather than a DXF/DWG file. Claude reads the
+drawing natively; this section is what to do with it. The DXF `reverse` rules R4, R6/R6b, R7–R9, R13–R15, R19–R20
+still apply; R1–R3, R10–R12, R18 and R22–R23 are DXF/sheet-metal specific and do not.
+
+**1. Get legible pixels — or a reader.** For a VECTOR PDF try `analyze_drawing(file.pdf)` first: it rebuilds the page
+as a DXF and returns the same analysis the DXF `reverse` rules describe, with exact dimension text; read `sheet.pdf`
+(scale used, `ASSUMED` = check the title block, `unassigned_numbers` = read those yourself). Its dimensions are
+RECOGNISED, not read from entities — cross-check the overall size. For scans, photos, or when it refuses
+(`PDF_NOT_VECTOR`), read with vision. A PDF page reaches you as a page image plus its text layer, rasterised at a size you
+do not control, so small dimension text on a big sheet can be unreadable and any pixel coordinate you give cannot
+be mapped back. If `prepare_drawing` is available, call it: it returns tiles (title block, each view, dense
+regions) at a safe size with a known origin, plus the exact text layer. Ask for pixel coordinates (never
+normalised) and offset them by the tile origin; check any location you are about to rely on with
+`annotate_regions` (it draws your boxes/points back onto the page). Upright pages only; split sets over 100 pages.
+
+**2. Numbers come from text, not from measuring.** Vector PDFs carry dimension text exactly: use it. Read a
+dimension off the image only when no text layer exists (scan/photo) and mark it `vision`. Never scale a distance
+from pixels unless a scale bar is printed. Counting is approximate: count holes per view and cross-check
+against the callout (`4X Ø8`) before trusting either.
+
+**3. Write the interpretation BEFORE building** (one compact table, shown to the user when anything is
+uncertain): `units` (mm/in — convert to METERS for the IR, 1 in = 0.0254 m), `projection` (first/third angle
+and which view is front), `material/thickness`, overall size (three numbers), then per feature
+`{kind, size, position (from which datum), through/blind depth, source: text|vision, view}`, plus tolerances
+and notes you are ignoring. List every assumption. Resolve conflicts between views by the text callout, not
+the picture.
+
+**4. Know the IR limits and emulate** (state any emulation). `hole` does most of it: `ref:{face:{near}}` + `at:[x,y,z]`
+(a point ON any planar face), `depth` blind or `through_all`, `cbore:{diameter,depth}`, `csink:{diameter, angle?}` (90° = rim chamfer; any other
+included angle is a revolve cut and needs the hole axis in a Front/Right/Top datum plane, else the build refuses) and
+`thread:{size}` (RECORDED in the note, not modelled: cut `diameter` at the tap-drill
+size and tell the user; a real Hole Wizard hole is available by calling the `hole_wizard` tool after the part is built).
+`revolve` accepts `operation:'cut'`. Everything else: slot/keyway = line+arc profile cut; off-centre rectangle = rectangle with
+`cx`/`cy`; true threads, shell, draft: report the gap. Compute `at` from the drawing's datum
+dimensions in METERS, exactly on the face. IR is METERS and RADIANS; the validator rejects values over 10 m, angles
+over 2π, open extrude profiles and unknown field names.
+
+**5. Build, then VERIFY mechanically.** Call `verify_against_interpretation` with the table's numbers in mm:
+overall `bbox_mm`, `volume_mm3` (hand-computed, R13), `holes`, and `cg_mm` when any feature is one-sided (the
+only check that catches a mirrored feature, R14). A FAIL names the item and delta: fix the graph once and
+resubmit with `fresh_document=true`. If `capture_model_view` is available, compare an isometric render to the
+drawing's iso/views (label them "Image 1: drawing", "Image 2: model").
+
+**6. Close with an honest ledger:** what was verified (and by text or vision), what was assumed, what could not
+be modelled, and any dimension you could not read.
+
 ## coverage — Coverage reporting
 
 Every batch/folder run ends with one summary:

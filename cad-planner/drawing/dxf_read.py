@@ -79,12 +79,15 @@ def _ezdxf_recover():
     return recover
 
 try:                             # normal: imported as part of the `drawing` package
-    from . import contour, curvefit, pairing, viewgraph
+    from . import callouts, contour, curvefit, pairing, viewgraph
+    from .vocab import INSUNITS_MM
 except ImportError:              # fallback: run directly as a script from this directory
+    import callouts
     import contour
     import curvefit
     import pairing
     import viewgraph
+    from vocab import INSUNITS_MM
 
 ANALYSIS_VERSION = "0.7.0"   # 0.7.0: the WIRE form (payload phase 1). Everything the model or the
                              #        saved artifact carries goes through `wire.encode`, while the
@@ -159,7 +162,7 @@ def _r(v, nd=3):
 
 # Entity classes the reader consumes. Everything else it sees is COUNTED in sheet.not_read.
 _READ_TYPES = frozenset(("LINE", "ARC", "CIRCLE", "ELLIPSE", "DIMENSION", "MTEXT", "TEXT",
-                         "INSERT", "VIEWPORT"))
+                         "INSERT", "VIEWPORT", "MULTILEADER"))
 
 
 def _text_of(e):
@@ -445,8 +448,17 @@ def cluster(items, gap):
 
 
 # --------------------------------------------------------------------------- main read
-def read(path, cfg):
+def read(path, cfg, layout=""):
+    """Read a DXF file -> the draw dialect. (DWG/SLDDRW arrive here as a converted DXF; a vector PDF
+    is rebuilt as an in-memory DXF by pdf_read and goes through `read_doc` directly.)
+    `layout`: read ONE named layout ('' = every layout merged -- the historic behaviour)."""
     doc, auditor = _ezdxf_recover().readfile(path)
+    return read_doc(doc, auditor, path, cfg, layout=layout)
+
+
+def read_doc(doc, auditor, path, cfg, source_kind="dxf", layout=""):
+    """The analysis proper, on an ezdxf document. `path` is only the provenance (file name, size,
+    sha256) -- the geometry comes from `doc`. `source_kind` is reported as sheet.source."""
     gap = cfg["tolerance"]["cluster_gap_mm"]
 
     # ---- scale: TRUE value = raw measurement x dimlfac (per dimstyle). ----------------
@@ -461,9 +473,41 @@ def read(path, cfg):
 
     # ---- entities across ALL layouts (a DWG->DXF conversion puts them in paperspace) ---
     ents = []
-    for layout in doc.layouts:
-        for e in layout:
+    layout_info = []
+    names = [lo.name for lo in doc.layouts]
+    if layout and layout.lower() not in [n.lower() for n in names]:
+        raise ValueError("no layout named %r — this file has: %s" % (layout, ", ".join(names)))
+    for lo in doc.layouts:
+        n_ents = sum(1 for e in lo if e.dxftype() != "VIEWPORT")
+        layout_info.append({"name": lo.name, "entities": n_ents})
+        if layout and lo.name.lower() != layout.lower():
+            continue
+        for e in lo:
             ents.append(e)
+
+    # ---- UNITS: convert at the DOCUMENT, once, so every heuristic below (cluster gap, frame/title
+    #      block rules, 3-decimal rounding) sees TRUE mm. $INSUNITS says what one drawing unit is;
+    #      an inch/cm/m sheet is scaled up by that factor with ezdxf's own entity transforms (an
+    #      INSERT scales its insert point + scale factors, so block text/geometry follow; DIMENSION
+    #      defpoints scale, so the measurement does). Block DEFINITIONS are left alone: scaling them
+    #      too would double-scale every INSERT. Text CONTENT (a dimension override, a note) is what
+    #      the drafter typed and stays in drawing units -- only the printed NUMBER of a length
+    #      dimension is converted, where it is compared with the measurement. An unknown $INSUNITS
+    #      code is not converted (units_mm_per_unit None) and the direct-build gate refuses it.
+    raw_units = doc.header.get("$INSUNITS", None)
+    native_mm = INSUNITS_MM.get(raw_units or 0)
+    unit_k = 1.0
+    if native_mm is not None and native_mm != 1.0:
+        from ezdxf.math import Matrix44
+        m = Matrix44.scale(native_mm, native_mm, native_mm)
+        for e in ents:
+            if e.dxftype() == "VIEWPORT":
+                continue
+            try:
+                e.transform(m)
+            except Exception:  # noqa: BLE001 -- an entity that cannot be scaled must not sink the read
+                pass
+        unit_k = native_mm
 
     # ---- what is NOT read, counted so it cannot vanish silently: HATCH/SOLID (fills), OLE2FRAME
     #      (an embedded logo), and GEOMETRY inside blocks (centre-mark crosses, hatch-as-lines,
@@ -492,6 +536,15 @@ def read(path, cfg):
             rot = getattr(e.dxf, "rotation", 0.0) or 0.0
             for row, x, y in _block_rows(e):
                 texts.append((row, x, y, rot))
+        elif t == "MULTILEADER":
+            # A leader NOTE ("4X M6 THRU") is where hole callouts live; before this they were counted
+            # in not_read and never reached the model.
+            try:
+                mt = e.context.mtext
+                if mt is not None and mt.default_content:
+                    texts.append((mt.default_content, float(mt.insert[0]), float(mt.insert[1]), 0.0))
+            except Exception:  # noqa: BLE001 -- a malformed leader must not sink the read
+                pass
 
     # A section CUT LINE overhangs the view it is drawn in, so it must not enlarge that view's
     # measured size (f-2's front view read 85.15 instead of 70 before this). It stays in the
@@ -806,6 +859,8 @@ def read(path, cfg):
         # rounding), but a disagreement beyond rounding is REPORTED, never swallowed.
         printed = printed_text(doc, e)
         pv = printed_value(printed)
+        if pv is not None and unit_k != 1.0 and kind not in ("angular", "angular3p"):
+            pv = pv * unit_k                       # printed in the DRAWING's unit -> mm
         mismatch = False
         if pv is not None:
             if kind in ("angular", "angular3p"):
@@ -869,6 +924,26 @@ def read(path, cfg):
     frame_notes.sort(key=lambda n: (-n["at"][1], n["at"][0]))
 
     pairing.pair_bend_notes(bends, out_views, sheet_scale, cfg)
+
+    # ---- structured meaning of the TEXT (callouts.py): hole callouts, dimension tolerances, projection.
+    #      Additive: `notes` stay exactly as read; these are PROPOSALS parsed from them.
+    hole_callouts = []
+    for txt, px, py, _rot in texts:
+        parsed = callouts.parse_callout(txt)
+        if parsed:
+            parsed["at"] = [_r(px, 2), _r(py, 2)]
+            parsed["view"] = which_view(px, py)
+            hole_callouts.append(parsed)
+    for d in dims:
+        tol = callouts.parse_tolerance(d.get("text") or d.get("printed"))
+        if tol:
+            d["tol"] = tol
+        cp = callouts.parse_callout(d.get("text")) if d.get("text") else None
+        if cp:                                  # '4X Ø8 THRU' typed INTO a dimension override
+            cp["at"] = d["defpts"][-1] if d.get("defpts") else None
+            cp["view"] = d.get("view")
+            hole_callouts.append(cp)
+    projection_detected = callouts.detect_projection([t[0] for t in texts])
 
     # A SECTION INDICATOR (the cut line's arrow tails + heads) clusters on its own and would
     # otherwise be emitted as a tiny bogus view -- it survives the DWG route as real line
@@ -947,8 +1022,14 @@ def read(path, cfg):
                    "bytes": os.path.getsize(path)},
         "config": {"projection": cfg["projection"], "k_factor": cfg["sheet_metal"]["k_factor"]},
         "sheet": {
+            "source": source_kind,
+            "projection_detected": projection_detected,
+            "layouts": layout_info,
+            **({"layout_selected": layout} if layout else {}),
             "dxf_version": getattr(doc, "dxfversion", None),
             "units": doc.header.get("$INSUNITS", None),
+            "units_mm_per_unit": native_mm,    # what $INSUNITS says one drawing unit is (None = unknown code)
+            "units_converted_from_mm_per_unit": unit_k,   # the factor ALREADY APPLIED (1.0 = none)
             "scale_factor": sheet_scale,      # TRUE = paper x this  (DIMLFAC)
             "paper_box": [_r(fb[0], 2), _r(fb[1], 2), _r(fb[2], 2), _r(fb[3], 2)],
             "audit_errors": len(auditor.errors),
@@ -974,6 +1055,7 @@ def read(path, cfg):
         **({"view_graph": view_graph} if view_graph is not None else {}),
         "dimensions": dims,
         "bend_notes": bends,
+        **({"callouts": hole_callouts} if hole_callouts else {}),
         "notes": notes,
         "frame_notes": frame_notes,
         "user_description": None,   # filled in by hand when the author described the part

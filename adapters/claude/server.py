@@ -12,6 +12,7 @@ from mcp.server.caching import CacheHint
 from mcp.server.mcpserver.exceptions import ResourceError
 from execution_client import call_tool, get_state, ensure_ready as _ensure_ready, ExecutionLayerError
 from response_mapper import map_response
+import slddrw_merge
 # NOTE: pycompiler is reached via `from ir_execution_port import run_feature_graph` imported
 # LAZILY inside rebuild_from_ir and submit_feature_graph — a missing compiler tree degrades to a
 # clean tool error instead of killing the whole MCP server at startup.
@@ -481,11 +482,12 @@ def extrude_feature(
     through: bool = False,
     up_to_face_index: int = -1,
     mid_plane: bool = False,
+    revolve_cut: bool = False,
 ) -> str:
     """Extrude/feature the active sketch profile.
     feature_type='boss' (default): solid extrusion, requires depth.
     feature_type='cut': material removal, requires depth and existing solid body.
-    feature_type='revolve': solid of revolution — angle in DEGREES (default 360 = full revolve); axis defined by axis_x1/y1 to axis_x2/y2 (midpoint of that segment selects the centerline).
+    feature_type='revolve': solid of revolution — angle in DEGREES (default 360 = full revolve); axis defined by axis_x1/y1 to axis_x2/y2 (midpoint of that segment selects the centerline). revolve_cut=True makes it a revolve CUT (removes material; default False = boss).
     feature_type='sweep': sweeps profile along a path — requires path_sketch (name of the path sketch).
     feature_type='loft': lofts through multiple profiles — requires profiles (JSON array of sketch names, e.g. '[\"Sketch1\",\"Sketch2\"]').
     END CONDITION (boss/cut) — pick ONE; depth is required only for BLIND or mid_plane:
@@ -517,6 +519,7 @@ def extrude_feature(
             "through": through,
             "up_to_face_index": up_to_face_index,
             "mid_plane": mid_plane,
+            "revolve_cut": revolve_cut,
         },
     )
 
@@ -556,6 +559,61 @@ def create_rib(
             "is_norm_to_sketch": is_norm_to_sketch,
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Tool: hole_wizard
+# ---------------------------------------------------------------------------
+@mcp.tool(structured_output=False)
+def hole_wizard(
+    hole_type: Literal["counterbore", "countersink", "hole", "tap"],
+    standard: Literal["ansi_inch", "ansi_metric", "iso", "din", "jis"],
+    size: str,
+    points: str,
+    face_index: int = -1,
+    face_x: float | None = None,
+    face_y: float | None = None,
+    face_z: float | None = None,
+    fastener_type: str = "default",
+    end_condition: Literal["blind", "through_all"] = "blind",
+    depth: float = 0.0,
+    diameter: float = 0.0,
+    cbore_diameter: float = -1.0,
+    cbore_depth: float = -1.0,
+    csink_diameter: float = -1.0,
+    csink_angle: float = -1.0,
+    thread_depth: float = -1.0,
+    reverse: bool = False,
+) -> str:
+    """Place a STANDARD SOLIDWORKS Hole Wizard hole (real counterbore / countersink / clearance / tapped
+    hole with a thread callout) via IFeatureManager.HoleWizard5, at one or more points on a planar face.
+    Target face: face_index (from analyze_model('faces')) OR a point face_x/face_y/face_z ON the face.
+    points: JSON array of [x,y,z] METER hole centres lying ON that face, e.g. '[[0.01,0.05,0]]'.
+    hole_type: counterbore | countersink | hole (clearance) | tap (tapped).
+    standard: ansi_inch | ansi_metric | iso | din | jis. fastener_type: omit for the default of that
+        standard + hole_type (ISO: tap 147, clearance 144, cap-screw cbore 139, flat-head csink 140;
+        ANSI metric 43/40/33/35), or pass a swWzdHoleStandardFastenerTypes_e integer. A fastener or
+        size that does not belong to the standard + hole_type FAILS (HOLE_WIZARD_FAILED).
+    size: e.g. 'M6' (must be valid for that fastener). end_condition: blind (needs depth) | through_all.
+    depth/diameter in METERS (diameter 0 = the standard's size); cbore_diameter/cbore_depth METERS;
+    csink_diameter METERS and csink_angle DEGREES (included angle); thread_depth METERS (tap only).
+    Call it AFTER the body exists (it is not part of the IR; IR hole.thread is recorded-only).
+    On COMPLETED the result carries the created feature name and result_geometry."""
+    params: dict = {
+        "hole_type": hole_type, "standard": standard, "size": size, "points": points,
+        "fastener_type": fastener_type, "end_condition": end_condition,
+        "depth": depth, "diameter": diameter, "reverse": reverse,
+    }
+    if face_index >= 0:
+        params["face_index"] = face_index
+    if face_x is not None and face_y is not None and face_z is not None:
+        params.update({"face_x": face_x, "face_y": face_y, "face_z": face_z})
+    for k, v in (("cbore_diameter", cbore_diameter), ("cbore_depth", cbore_depth),
+                 ("csink_diameter", csink_diameter), ("csink_angle", csink_angle),
+                 ("thread_depth", thread_depth)):
+        if v >= 0:
+            params[k] = v
+    return _call("hole_wizard", params)
 
 
 # ---------------------------------------------------------------------------
@@ -892,7 +950,7 @@ def save_document(file_path: str = "") -> str:
 # ---------------------------------------------------------------------------
 @mcp.tool(structured_output=False)
 def analyze_model(
-    analysis_type: Literal["mass_properties", "geometry", "bodies", "edges", "faces", "features", "sketch", "feature_map"],
+    analysis_type: Literal["mass_properties", "geometry", "bbox", "bodies", "edges", "faces", "features", "sketch", "feature_map"],
     name: str = "",
     from_feature: str = "",
     to_feature: str = "",
@@ -903,6 +961,9 @@ def analyze_model(
     """Analyze the active SolidWorks part document (read-only, does NOT change state).
     analysis_type='mass_properties': returns volume, surface_area, center of gravity (cx, cy, cz) in document units.
     analysis_type='geometry': returns bodies, faces, edges, vertices counts of all solid bodies.
+    analysis_type='bbox': EXACT axis-aligned extents of all solid bodies, JSON {min,max,size} in meters (model axes).
+        Use it to check overall dimensions against a drawing. Cylindrical faces in 'faces' also carry hole (true =
+        concave, a hole not a boss), u_span (rad; ~6.283 = full circle) and v_span (length along the axis).
     analysis_type='bodies': PER-BODY fingerprints for multibody parts (e.g. a flattened assembly
         STEP import): volume, area, centroid, edge/vertex counts, and the body's face-index RANGE
         in the same enumeration 'faces' walks — segment the faces list per body with it.
@@ -1056,6 +1117,26 @@ def _advisories(art) -> str:
                    "sheet; say which factor produced a number before you quote it."
                    % ", ".join(scaled))
 
+    pdf = (art.get("sheet") or {}).get("pdf")
+    if pdf:
+        if "ASSUMED" in str(pdf.get("scale_source")):
+            out.append("pdf scale ASSUMED 1:1 — no scale text was found; every length below is wrong by the "
+                       "true ratio unless the drawing really is 1:1. Read the title block and re-run with "
+                       "scale='1:N'.")
+        if pdf.get("unassigned_numbers"):
+            out.append("pdf unassigned_numbers x%d (sheet.pdf) — numbers the reader could not tie to a "
+                       "dimension; read them from the page with vision (prepare_drawing) before building."
+                       % len(pdf["unassigned_numbers"]))
+        out.append("pdf source — dimensions were RECOGNISED from arrowheads and text, not read from "
+                   "DIMENSION entities; cross-check the overall size with verify_against_interpretation.")
+
+    layouts = [l for l in ((art.get("sheet") or {}).get("layouts") or []) if l.get("entities")]
+    if len(layouts) > 1 and not (art.get("sheet") or {}).get("layout_selected"):
+        out.append("layouts @ sheet (%s) — several layouts carry content and were MERGED into one "
+                   "coordinate space; frames, views and the title block will not make sense. Re-run "
+                   "analyze_drawing with layout='<name>' to read one at a time."
+                   % ", ".join("%s:%d" % (l["name"], l["entities"]) for l in layouts))
+
     not_read = (art.get("sheet") or {}).get("not_read") or {}
     if not_read:
         out.append("not_read @ sheet (%s) — the reader saw these and did not emit them; a named "
@@ -1096,6 +1177,10 @@ def _advisories(art) -> str:
         out.append("view_graph.solved:false (%s) — the axes did not join; that joining is yours."
                    % vg.get("reason", "reason in the field"))
 
+    sw_line = slddrw_merge.advisory(art)
+    if sw_line:
+        out.append(sw_line)
+
     if not out:
         return ""
     return "\nADVISORIES (%d) — only what actually fired in THIS read:\n  %s" % (
@@ -1114,11 +1199,16 @@ def _wire_json(obj) -> str:
 
 @mcp.tool(structured_output=False)
 def analyze_drawing(file_path: str, save_analysis: bool = True,
-                    mode: Literal["auto", "ir", "build"] = "auto") -> str:
-    """Read a 2D technical drawing — **.DXF or .DWG** — and either BUILD the part from it or hand
-    you the evidence to build it yourself. This is the drawing→part front end: a real drawing
-    arrives as DXF/DWG (a .SLDDRW is model-linked and nobody ships one), so start here for ANY
-    "build the part from this drawing" job. A .DWG is converted automatically.
+                    mode: Literal["auto", "ir", "build"] = "auto", layout: str = "",
+                    page: int = 1, scale: str = "") -> str:
+    """Read a 2D technical drawing — **.DXF, .DWG, a native .SLDDRW, or a VECTOR .PDF** — and either BUILD the part
+    from it or hand you the evidence to build it yourself. This is the drawing→part front end: start
+    here for ANY "build the part from this drawing" job. A .DWG or .SLDDRW is opened in SolidWorks and
+    exported to DXF automatically (a .SLDDRW also needs its model reachable, or its views are blank).
+    A vector PDF page is rebuilt as a DXF (lines, arcs, circles, text, dimensions recognised from arrowhead
+    pairs and Ø/R numbers) and read the same way — see sheet.pdf for what was recognised, the scale it used
+    (and whether that was ASSUMED) and `unassigned_numbers` it could not place. A scan/photo has nothing to
+    extract: use prepare_drawing and your own vision.
 
     **mode='auto' (default) returns ONE OF TWO SHAPES — the reader decides, not you:**
 
@@ -1238,7 +1328,11 @@ def analyze_drawing(file_path: str, save_analysis: bool = True,
       notes[] — other free text on the sheet (e.g. a bare '2 mm' thickness note, 'SECTION C-C'),
         text inside note blocks included.
 
-    file_path: absolute path to the .DXF or .DWG.
+    file_path: absolute path to the .DXF, .DWG, .SLDDRW or .PDF.
+    page / scale: PDF only. page is 1-based; scale like '1:2' (paper:true) overrides the title-block text.
+    layout: DXF layout name to read ('' = every layout merged, the historic behaviour). A sheet file
+        with several sheets/layouts overlays them all when this is blank — sheet.layouts lists the names
+        and entity counts, and the answer warns when more than one has content; pass one to read it alone.
     save_analysis (default True): also write `<name>.analysis-v<version>.json` beside the source —
         a research artifact for cross-part study, versioned by the analyzer. Same version
         overwrites. You never need to read it back: this answer already carries everything in it."""
@@ -1246,23 +1340,45 @@ def analyze_drawing(file_path: str, save_analysis: bool = True,
     if not os.path.exists(src):
         return f"FAILED | FILE_NOT_FOUND | {src}"
     ext = os.path.splitext(src)[1].lower()
-    if ext not in (".dxf", ".dwg"):
-        return ("FAILED | UNSUPPORTED_TYPE | analyze_drawing reads .DXF or .DWG. "
-                "A native .SLDDRW is a test-only path (analyze_slddrw_test).")
-    # DWG is binary; the reader parses DXF only. SolidWorks opens the DWG as a drawing and exports
-    # DXF — measured lossless for geometry, dimensions, DIMLFAC, linetypes and notes.
-    dxf_path = src if ext == ".dxf" else os.path.splitext(src)[0] + ".dwg2dxf.dxf"
+    if ext not in (".dxf", ".dwg", ".slddrw", ".pdf"):
+        return ("FAILED | UNSUPPORTED_TYPE | analyze_drawing reads .DXF, .DWG, .SLDDRW or a vector .PDF. For "
+                "an image or a scan use prepare_drawing and read it yourself.")
+    # DWG/SLDDRW are not DXF; the reader parses DXF only. SolidWorks opens the file as a drawing and
+    # exports DXF — measured lossless for geometry, dimensions, DIMLFAC, linetypes and notes (DWG).
+    dxf_path = src if ext in (".dxf", ".pdf") else os.path.splitext(src)[0] + "." + ext[1:] + "2dxf.dxf"
+
+    _save_warnings: list = []
+    _extras: dict = {}
 
     def _load():
         """Convert (DWG) + read + save -> (art, cfg, None) | (None, None, error string)."""
         converted_from = None
-        if ext == ".dwg":
+        if ext in (".dwg", ".slddrw"):
             opened = _call_raw("open_document", {"file_path": src})
             if opened.get("status") != "COMPLETED":
                 err = opened.get("error") or {}
                 return None, None, f"FAILED | DWG_OPEN_FAILED | {err.get('code')}: {err.get('message')}"
-            exported = _call_raw("export_document", {"format": "DXF", "file_path": dxf_path})
-            _call_raw("close_document", {})      # the import is scratch — discard, never save
+            try:
+                exported = _call_raw("export_document", {"format": "DXF", "file_path": dxf_path})
+            except Exception as exc:             # noqa: BLE001 - still must close the scratch import
+                return None, None, f"FAILED | DWG_CONVERT_FAILED | {type(exc).__name__}: {exc}"
+            else:
+                # .SLDDRW only: the drawing is still open, so read the SolidWorks-native facts the DXF
+                # lost. Additive and best-effort — any failure is a warning, never a failed read.
+                if ext == ".slddrw":
+                    try:
+                        got = slddrw_merge.parse_extras(
+                            _call_raw("analyze_slddrw_test", {"include_extras": True}))
+                        if got is None:
+                            _save_warnings.append("native slddrw extras unavailable (no extras in the "
+                                                  "analyze_slddrw_test response); DXF-only read")
+                        else:
+                            _extras.update(got)
+                    except Exception as exc:     # noqa: BLE001
+                        _save_warnings.append(f"native slddrw extras failed ({type(exc).__name__}: "
+                                              f"{exc}); DXF-only read")
+            finally:
+                _call_raw("close_document", {})  # the import is scratch — discard, never save
             if exported.get("status") != "COMPLETED":
                 err = exported.get("error") or {}
                 return None, None, f"FAILED | DWG_CONVERT_FAILED | {err.get('code')}: {err.get('message')}"
@@ -1271,11 +1387,23 @@ def analyze_drawing(file_path: str, save_analysis: bool = True,
             return None, None, f"FAILED | READER_UNAVAILABLE | {_DXF_READER_IMPORT_ERROR}"
         try:
             cfg = _draw.load_config()
-            art = _draw.read(dxf_path, cfg)
+            if ext == ".pdf":
+                art = _draw.read_pdf(src, cfg, page=page, scale=scale)
+            else:
+                art = _draw.read(dxf_path, cfg, layout=layout) if layout else _draw.read(dxf_path, cfg)
+        except ValueError as exc:
+            code = "PDF_NOT_VECTOR" if ext == ".pdf" else "DXF_READ_FAILED"
+            return None, None, f"FAILED | {code} | {exc}"
         except Exception as exc:
-            return None, None, f"FAILED | DXF_READ_FAILED | {type(exc).__name__}: {exc}"
+            code = "PDF_READ_FAILED" if ext == ".pdf" else "DXF_READ_FAILED"
+            return None, None, f"FAILED | {code} | {type(exc).__name__}: {exc}"
         if converted_from:
             art["source"]["converted_from"] = converted_from
+        if _extras:
+            try:
+                slddrw_merge.merge_extras(art, _extras)
+            except Exception as exc:             # noqa: BLE001 - merge is additive, never fatal
+                _save_warnings.append(f"native slddrw extras not merged: {type(exc).__name__}: {exc}")
         if save_analysis:
             out = os.path.join(os.path.dirname(dxf_path),
                                "%s.analysis-v%s.json" % (os.path.splitext(os.path.basename(src))[0],
@@ -1283,14 +1411,27 @@ def analyze_drawing(file_path: str, save_analysis: bool = True,
             try:
                 with open(out, "w", encoding="utf-8") as fh:
                     json.dump(_draw.wire_encode(art), fh, indent=1, ensure_ascii=False)
-            except OSError:
-                pass                              # the artifact is research-only, never the result
+            except OSError as exc:                # research-only, never the result — but say so
+                _save_warnings.append(f"analysis artifact not saved: {exc}")
         return art, cfg, None
 
     art, cfg, err = _load()
     if err:
         return err
     full = _wire_json(_draw.wire_encode(art))
+    if _save_warnings:
+        full = "WARNING: " + "; ".join(_save_warnings) + "\n" + full
+    _sh = art.get("sheet") or {}
+    mm_per_unit = _sh.get("units_mm_per_unit", 1.0)
+    _applied = _sh.get("units_converted_from_mm_per_unit", 1.0)
+    if mm_per_unit is None or (mm_per_unit != 1.0 and _applied != mm_per_unit):
+        full = (f"WARNING: $INSUNITS={_sh.get('units')!r} is not a unit the reader converts "
+                f"({mm_per_unit} mm per unit) — every length below is in drawing units, NOT mm. "
+                f"Convert before writing IR.\n") + full
+    elif _applied != 1.0:
+        full = (f"NOTE: the sheet is in $INSUNITS={_sh.get('units')!r} ({_applied} mm per unit); every "
+                f"length below was already converted to TRUE mm — do not convert again. Free text "
+                f"(notes, dimension overrides) is still as typed, in the drawing's own unit.\n") + full
 
     # The GATE decides the result shape. The model must never be asked to choose between "give me
     # the analysis" and "just build it" BEFORE it has seen any geometry — that was the flaw in
@@ -1298,7 +1439,9 @@ def analyze_drawing(file_path: str, save_analysis: bool = True,
     try:
         verdict = _draw.assess(art, cfg)
     except Exception as exc:                      # noqa: BLE001 - a gate bug must not lose the read
-        return f"NOT_DIRECT | GATE_ERROR | {type(exc).__name__}: {exc}\n{full}"
+        import traceback
+        return (f"NOT_DIRECT | GATE_ERROR | {type(exc).__name__}: {exc}\n"
+                f"{traceback.format_exc(limit=4)}\n{full}")
 
     if not verdict["direct"]:
         if mode in ("ir", "build"):
@@ -1315,7 +1458,9 @@ def analyze_drawing(file_path: str, save_analysis: bool = True,
     try:
         graph = _draw.lower_flat_pattern(art, cfg, verdict)
     except Exception as exc:                      # noqa: BLE001
-        return f"NOT_DIRECT | LOWERING_ERROR | {type(exc).__name__}: {exc}\n{full}"
+        import traceback
+        return (f"NOT_DIRECT | LOWERING_ERROR | {type(exc).__name__}: {exc}\n"
+                f"{traceback.format_exc(limit=4)}\n{full}")
 
     if mode == "ir":
         return _wire_json(graph)
@@ -1348,7 +1493,8 @@ def analyze_drawing(file_path: str, save_analysis: bool = True,
 # Tool: analyze_slddrw_test  (TEST/REFERENCE ONLY — was analyze_drawing until 2026-07-27)
 # ---------------------------------------------------------------------------
 @mcp.tool(structured_output=False)
-def analyze_slddrw_test(include_geometry: bool = False, include_relations: bool = False) -> str:
+def analyze_slddrw_test(include_geometry: bool = False, include_relations: bool = False,
+                        include_extras: bool = False) -> str:
     """TEST/REFERENCE TOOL — reads a NATIVE SolidWorks drawing (.SLDDRW) through COM.
 
     ⚠ NOT the shipping drawing→part path. A .SLDDRW is SLDPRT-linked (its views go blank if the part
@@ -1397,9 +1543,16 @@ def analyze_slddrw_test(include_geometry: bool = False, include_relations: bool 
         resolved to NO primitive: a loud gap to close from geometry, never to drop.
       · center_marks / centerlines — which circles carry marks (on:[ids]), which segments run
         through which (through:[ids]). A view that cannot expose its centerlines says so
-        ({centerlines_reported, unreadable:true}) instead of guessing."""
+        ({centerlines_reported, unreadable:true}) instead of guessing.
+
+    include_extras (default False) — ADDS `extras` (default output unchanged): per sheet {name, paper_size,
+      scale_num/scale_den, projection first_angle|third_angle, width_m/height_m, template, notes[]}, per view
+      {name, referenced_model, referenced_configuration, type, scale, notes[], dimensions[{name, value_si,
+      tol?, text?{prefix,suffix,above,below}}]}, custom_properties, and errors[] for sub-reads that failed.
+      analyze_drawing(.slddrw) requests this itself and merges it into its artifact."""
     return _call("analyze_slddrw_test", {"include_geometry": include_geometry,
-                                         "include_relations": include_relations})
+                                         "include_relations": include_relations,
+                                         "include_extras": include_extras})
 
 
 # ---------------------------------------------------------------------------
@@ -1739,7 +1892,8 @@ _CAD_PLANNER_DIR = os.path.normpath(os.path.join(
 # publish itself as a resource until it is added here, deliberately.
 _RECIPE_SECTIONS = (
     "contract", "canonicalization", "forward", "mapping", "mapping_part",
-    "mapping_sheet_metal", "mapping_assembly", "verification", "reverse", "coverage",
+    "mapping_sheet_metal", "mapping_assembly", "verification", "reverse",
+    "machined_from_image", "coverage",
 )
 
 
@@ -1934,7 +2088,7 @@ def _recipe_index() -> str:
         "Reading order — ARTIFACT→IR: contract + canonicalization + mapping, then the vocabulary\n"
         "section matching the document (mapping_part / mapping_sheet_metal / mapping_assembly),\n"
         "then verification BEFORE labeling anything. INTENT→IR (no original part): forward.\n"
-        "DXF/DWG DRAWING→PART: reverse."
+        "DXF/DWG DRAWING→PART: reverse. PDF/IMAGE DRAWING→PART: machined_from_image."
     )
 
 
@@ -1968,6 +2122,25 @@ def _register_recipe_sections() -> None:
 
 
 _register_recipe_sections()
+
+
+_PDF_WORKFLOW_PROMPT = """\
+Reconstruct the machined part shown in this drawing: {file_path}
+
+1. Read the recipe first: get_recipe(section='machined_from_image') and get_recipe(section='forward').
+2. Look at the drawing (attach/read it). If prepare_drawing is available, call it for legible tiles and the
+   exact text layer. Take numbers from text, not from measuring pixels.
+3. Write the interpretation table (units, projection, overall size, each feature with source text|vision,
+   assumptions). Ask the user ONLY about things the drawing cannot settle.
+4. Build with submit_feature_graph (METERS, RADIANS).
+5. Verify with verify_against_interpretation (bbox_mm, volume_mm3, holes, cg_mm), fix once, resubmit.
+6. Finish with the ledger: verified / assumed / could not model / could not read."""
+
+
+@mcp.prompt()
+def pdf_drawing_to_part(file_path: str) -> str:
+    """Workflow for turning a PDF/image engineering drawing into a SolidWorks part."""
+    return _PDF_WORKFLOW_PROMPT.format(file_path=file_path)
 
 
 @mcp.resource("recipe://usage/{section}", name="recipe_section", mime_type="text/markdown",
@@ -2330,7 +2503,7 @@ def compare_parts(doc_a: str, doc_b: str, detail: str = "") -> str:
     the DECIDED verified-criteria verdict (analysis-artifact.schema.json): topology EXACT AND
     |ΔV| <= 1% AND |ΔA| <= 1%. The verdict is a REPORT — writing ir.verification into the
     artifact stays the caller's job. Read-only geometry-wise (activation may switch the active
-    document; doc_b is left active). bbox comparison: pending (analyze doesn't expose it yet).
+    document; doc_b is left active). bbox_size A/B (exact extents) is reported beside the verdict but is not part of it.
 
     detail='faces' (optional): ALSO run analyze_model(faces) on both and list the surfaces that
         are EXTRA (in doc_b only) or MISSING (in doc_a only), matched by supporting plane (normal
@@ -2350,6 +2523,11 @@ def compare_parts(doc_a: str, doc_b: str, detail: str = "") -> str:
             raise RuntimeError(f"DOC_{label}_UNAVAILABLE | {doc} | {err.get('code')}: {err.get('message')}")
         geo = _kv_dict(_analysis_items(_call_raw("analyze_model", {"analysis_type": "geometry", "name": ""})))
         mass = _kv_dict(_analysis_items(_call_raw("analyze_model", {"analysis_type": "mass_properties", "name": ""})))
+        try:                                  # older execution layers lack 'bbox' — report, never fail
+            bb = _analysis_items(_call_raw("analyze_model", {"analysis_type": "bbox", "name": ""}))
+            mass["_bbox_size"] = json.loads(bb[0]).get("size") if bb else None
+        except Exception:  # noqa: BLE001
+            mass["_bbox_size"] = None
         faces = None
         if want_faces:
             items = _analysis_items(_call_raw("analyze_model", {"analysis_type": "faces", "name": ""}))
@@ -2390,6 +2568,10 @@ def compare_parts(doc_a: str, doc_b: str, detail: str = "") -> str:
             f"volume A={fmt(mass_a.get('volume'))} B={fmt(mass_b.get('volume'))} dV={fmt(dv, '.4f')}% | "
             f"area A={fmt(mass_a.get('surface_area'))} B={fmt(mass_b.get('surface_area'))} dA={fmt(da, '.4f')}% | "
             f"cg_distance={fmt(cg_dist)} m | reference=A ({doc_a})")
+    ba, bb_ = mass_a.get("_bbox_size"), mass_b.get("_bbox_size")
+    if ba and bb_:                            # reported, NOT part of the verdict (extents are exact but
+        line += (" | bbox_size A=" + "x".join(f"{v:.6g}" for v in ba) +        # the 1% gate is volume/area)
+                 " B=" + "x".join(f"{v:.6g}" for v in bb_) + " m")
 
     if want_faces:
         missing, extra = _diff_faces(faces_a, faces_b)
@@ -2406,6 +2588,202 @@ def compare_parts(doc_a: str, doc_b: str, detail: str = "") -> str:
         if extra:
             line += "\n  EXTRA:   " + _list(extra)
     return line
+
+
+@mcp.tool(structured_output=False)
+def export_image(view: str = "isometric", width: int = 1280, height: int = 960, file_path: str = "") -> list:
+    """Picture of the ACTIVE document (the built part) returned as an image, to compare with the source drawing.
+
+    view: isometric | front | back | left | right | top | bottom | current — or a comma list for up to 4
+        ("isometric,front,top"). Changes the VIEW orientation only; the model and state_version are untouched.
+    width/height: requested size; reduced automatically so the image always fits the model's image limits.
+    file_path: optional .bmp path for the FIRST view (default: a temp file, deleted after).
+    Compare with "Image 1: drawing", "Image 2: model" labels; remember the capture is a shaded view, not a
+    measurement — use verify_against_interpretation for numbers."""
+    import tempfile
+    try:
+        import drawing_prep as dp
+        from mcp.server.mcpserver.utilities.types import Image
+    except Exception as ex:  # noqa: BLE001
+        return [f"FAILED | IMAGE_SUPPORT_UNAVAILABLE | {ex}"]
+    views = [v.strip() for v in view.split(",") if v.strip()][:4] or ["isometric"]
+    me, mt = dp.tier_limits()
+    w, h = dp.resized_size(max(64, min(int(width), 4096)), max(64, min(int(height), 4096)), me, mt)
+    out, notes = [], []
+    for i, v in enumerate(views):
+        keep = bool(file_path) and i == 0
+        path = os.path.abspath(file_path) if keep else os.path.join(
+            tempfile.gettempdir(), f"solidpilot_{uuid.uuid4().hex[:8]}.bmp")
+        try:
+            r = _call_raw("export_image", {"view": v, "width": w, "height": h, "file_path": path})
+            if r.get("status") != "COMPLETED":
+                err = r.get("error") or {}
+                return [f"FAILED | EXPORT_IMAGE_FAILED | {v}: {err.get('code')}: {err.get('message')}"]
+            with open(path, "rb") as fh:
+                out.append(Image(data=dp.bmp_to_png(fh.read()), format="png"))
+            notes.append(f"Image {i + 1}: {v} {w}x{h}")
+        except (OSError, ValueError) as ex:
+            return [f"FAILED | IMAGE_CONVERT_FAILED | {v}: {type(ex).__name__}: {ex}"]
+        finally:
+            if not keep:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+    return ["; ".join(notes)] + out
+
+
+@mcp.tool(structured_output=False)
+def prepare_drawing(file_path: str, page: int = 1, region: str = "", dpi: int = 200) -> list:
+    """Make a PDF/image drawing legible: returns the page as safe-size image tiles PLUS its exact text layer.
+
+    Why: a PDF reaches you rasterised at a size you can't control, small dimension text degrades, and pixel
+    coordinates can't be mapped back. Here every image is sized to fit (never silently downscaled) and carries
+    its origin, so a pixel (px,py) in image n is page point (clip_x0 + px/px_per_pt, clip_y0 + py/px_per_pt).
+    The text layer gives dimension strings EXACTLY (page points, y down) — prefer it to reading digits by eye.
+    kind='vector' = text+paths (exact numbers); 'scan' = raster only (read by vision, mark as such).
+
+    file_path: .pdf or .png/.jpg/.tif/.bmp. page: 1-based. dpi: render density (default 200; lowered
+    automatically to fit). region: JSON [x0,y0,x1,y1] in PAGE POINTS to zoom one area (e.g. a dimension
+    cluster or the title block) — use the text layer's coordinates. Needs PyMuPDF (requirements-pdf.txt)."""
+    src = os.path.abspath(file_path)
+    if not os.path.exists(src):
+        return [f"FAILED | FILE_NOT_FOUND | {src}"]
+    try:
+        import drawing_prep as dp
+        from mcp.server.mcpserver.utilities.types import Image
+        fitz, doc = dp.open_source(src)
+    except Exception as ex:  # noqa: BLE001
+        return [f"FAILED | PDF_READER_UNAVAILABLE | {ex}"]
+    try:
+        if not 1 <= page <= doc.page_count:
+            return [f"FAILED | BAD_PAGE | {src} has {doc.page_count} page(s); asked for {page}"]
+        pg = doc[page - 1]
+        rect = [pg.rect.x0, pg.rect.y0, pg.rect.x1, pg.rect.y1]
+        meta = {"file": os.path.basename(src), "page": page, "pages": doc.page_count,
+                "kind": dp.classify_page(pg), "page_pt": [round(rect[2], 1), round(rect[3], 1)],
+                "page_mm_on_paper": [round(dp.to_mm(rect[2]), 1), round(dp.to_mm(rect[3]), 1)]}
+        shots, regions = [], []
+        if region:
+            try:
+                regions = [tuple(float(v) for v in json.loads(region))]
+                if len(regions[0]) != 4:
+                    raise ValueError("need 4 numbers")
+            except Exception as ex:  # noqa: BLE001
+                return [f"FAILED | BAD_REGION | region must be JSON [x0,y0,x1,y1] in page points: {ex}"]
+        else:
+            regions, dpi = dp.plan_tiles_auto(rect, dpi)
+        for clip in regions:
+            png, info = dp.render_region(fitz, pg, clip, dpi=dpi)
+            shots.append((png, info))
+        if not region and len(regions) > 1:       # a fitted overview first, so the layout is clear
+            png, info = dp.render_region(fitz, pg, rect, dpi=72)
+            shots.insert(0, (png, dict(info, overview=True)))
+        items, total, truncated = dp.text_layer(pg)
+        meta["images"] = [dict(n=i + 1, **info) for i, (_p, info) in enumerate(shots)]
+        meta["text_layer"] = {"total": total, "shown": len(items), "truncated": truncated,
+                              "items": [f"{w['t']}@{w['x0']},{w['y0']}" for w in items]}
+        meta["note"] = ("Coordinates are PAGE POINTS (72/in, origin top-left, y down). Dimension values come "
+                        "from the text layer when kind is vector/mixed; true size = paper size x the drawing "
+                        "scale printed in the title block.")
+        return [json.dumps(meta, ensure_ascii=False)] + [Image(data=png, format="png") for png, _i in shots]
+    except Exception as ex:  # noqa: BLE001
+        return [f"FAILED | PREPARE_FAILED | {type(ex).__name__}: {ex}"]
+    finally:
+        doc.close()
+
+
+@mcp.tool(structured_output=False)
+def annotate_regions(file_path: str, marks: str, page: int = 1, region: str = "", dpi: int = 200) -> list:
+    """Draw YOUR claimed locations on the drawing and look at the result — a self-check before you rely on them.
+
+    Your localisation of a dimension, a hole or a feature is approximate (vision docs: verify before use). Give
+    the places you think things are; get back the same region with each mark drawn in red and numbered, plus
+    each mark's pixel position. If a box does not sit on what you meant, correct the coordinates and call again.
+
+    marks: JSON list in PAGE POINTS (the coordinates prepare_drawing's text layer and tiles use), e.g.
+        [{"box":[x0,y0,x1,y1],"label":"Ø8 hole"},{"point":[x,y],"label":"datum A"}]
+    page (1-based), region (JSON [x0,y0,x1,y1] in page points; default = the marks plus a margin), dpi: as in
+    prepare_drawing. The file is never modified. Needs PyMuPDF (requirements-pdf.txt)."""
+    src = os.path.abspath(file_path)
+    if not os.path.exists(src):
+        return [f"FAILED | FILE_NOT_FOUND | {src}"]
+    try:
+        import drawing_prep as dp
+        from mcp.server.mcpserver.utilities.types import Image
+        parsed = dp.parse_marks(json.loads(marks))
+        clip = None
+        if region:
+            clip = tuple(float(v) for v in json.loads(region))
+            if len(clip) != 4:
+                raise ValueError("region needs 4 numbers [x0,y0,x1,y1]")
+    except (ValueError, TypeError) as ex:
+        return [f"FAILED | BAD_MARKS | {ex}"]
+    except Exception as ex:  # noqa: BLE001
+        return [f"FAILED | PDF_READER_UNAVAILABLE | {ex}"]
+    try:
+        fitz, doc = dp.open_source(src)
+    except Exception as ex:  # noqa: BLE001
+        return [f"FAILED | PDF_READER_UNAVAILABLE | {ex}"]
+    try:
+        if not 1 <= page <= doc.page_count:
+            return [f"FAILED | BAD_PAGE | {src} has {doc.page_count} page(s); asked for {page}"]
+        png, info, resolved = dp.annotate_region(fitz, doc[page - 1], parsed, clip=clip, dpi=max(30, min(dpi, 600)))
+        meta = {"file": os.path.basename(src), "page": page, "image": info,
+                "marks": [{"label": m["label"], "kind": m["kind"], "page_pt": m["pts"], "px": m["px"]}
+                          for m in resolved]}
+        return [json.dumps(meta, ensure_ascii=False), Image(data=png, format="png")]
+    except Exception as ex:  # noqa: BLE001
+        return [f"FAILED | ANNOTATE_FAILED | {type(ex).__name__}: {ex}"]
+    finally:
+        doc.close()
+
+
+@mcp.tool(structured_output=False)
+def verify_against_interpretation(expected: str) -> str:
+    """Check the ACTIVE built part against your interpretation of a drawing (PDF/image/DXF) — a
+    mechanical PASS/FAIL per item instead of eyeballing numbers.
+
+    expected: JSON string, MILLIMETRES (what the drawing prints), every key optional:
+        {"bbox_mm":[x,y,z] (overall size; axes compared SORTED unless "bbox_ordered":true),
+         "volume_mm3":n, "volume_tol_pct":2, "cg_mm":[x,y,z], "cg_tol_mm":1,
+         "holes":[{"diameter_mm":8,"count":4}], "tol_mm":0.1}
+    Measures bbox + mass properties + faces via analyze_model and reports FAIL rows with deltas, WARN for
+    built-but-unlisted holes, and NOT CHECKED for anything it could not measure. cg_mm is the check that
+    catches a mirrored / wrong-face feature (volume stays equal). A PASS covers only what you listed."""
+    try:
+        exp = json.loads(expected)
+        if not isinstance(exp, dict):
+            raise ValueError("must be a JSON object")
+    except Exception as ex:  # noqa: BLE001
+        return f"FAILED | INVALID_JSON | expected must be a JSON object: {ex}"
+    try:
+        import drawing_verify
+    except Exception as ex:  # noqa: BLE001
+        return f"FAILED | VERIFIER_UNAVAILABLE | {ex}"
+
+    measured = {"bbox": None, "volume": None, "cg": None, "faces": None}
+    try:
+        if "bbox_mm" in exp:
+            try:
+                items = _analysis_items(_call_raw("analyze_model", {"analysis_type": "bbox", "name": ""}))
+                measured["bbox"] = json.loads(items[0]) if items else None
+            except RuntimeError:
+                measured["bbox"] = None           # older execution layer -> reported as NOT CHECKED
+        if "volume_mm3" in exp or "cg_mm" in exp:
+            mass = _kv_dict(_analysis_items(_call_raw("analyze_model", {"analysis_type": "mass_properties", "name": ""})))
+            measured["volume"] = mass.get("volume")
+            if all(isinstance(mass.get(k), (int, float)) for k in ("cx", "cy", "cz")):
+                measured["cg"] = [mass["cx"], mass["cy"], mass["cz"]]
+        if "holes" in exp:
+            items = _analysis_items(_call_raw("analyze_model", {"analysis_type": "faces", "name": ""}))
+            measured["faces"] = json.loads(items[0]).get("faces", []) if items else []
+    except RuntimeError as ex:
+        return f"FAILED | MEASURE_FAILED | {ex}"
+    try:
+        return drawing_verify.render(drawing_verify.evaluate(exp, measured))
+    except (KeyError, TypeError, ValueError) as ex:
+        return f"FAILED | BAD_EXPECTED | {type(ex).__name__}: {ex} (see the tool description for the shape)"
 
 
 _FACE_POS_TOL = 5e-5   # 50µm — supporting plane offset / point match
@@ -2637,7 +3015,9 @@ def _run_graph(graph_obj, fresh_document):
         sv = _resync_state_version()
         return (f"FAILED | UNEXPECTED | {type(ex).__name__}: {ex} | state_version resynced to {sv}",
                 False, sv)
-    return result.summary(), True, _resync_state_version()
+    # ok must reflect the COMPILE outcome: callers (analyze_drawing build, rebuild_from_ir) append
+    # success-only tails ("built from…", VERIFY hints) that are wrong on a half-built part.
+    return result.summary(), result.status == "COMPLETED", _resync_state_version()
 
 
 @mcp.tool(structured_output=False)
@@ -2682,7 +3062,7 @@ def submit_feature_graph(graph: str, fresh_document: bool = True) -> str:
         return f"FAILED | INVALID_JSON | the graph is not valid JSON: {ex}"
 
     text, ok, sv = _run_graph(graph_obj, fresh_document)
-    return text + (f" | state_version={sv}" if ok else "")
+    return text + f" | state_version={sv}"      # resynced after every run, success or not
 
 
 # ---------------------------------------------------------------------------

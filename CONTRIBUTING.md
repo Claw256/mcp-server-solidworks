@@ -114,6 +114,8 @@ python server.py
   python -m pycompiler.tests.test_compiler
   ```
 
+- **Adapter and planner suites (offline):** each runs standalone or under `pytest`. `adapters/claude/tests/test_drawing_verify.py` (PASS/FAIL comparison), `test_drawing_prep.py` (image-size maths, BMP→PNG, `export_image`, and PDF tiling when the optional PyMuPDF is installed), `test_execution_client_http.py`, and `cad-planner/drawing/tests/test_draw_contract.py` (draw dialect, direct-build gate incl. the units and mixed-bend guards). `test_schema_contract.py` needs the adapter's dependencies (`pip install -r adapters/claude/requirements.txt`).
+
 Both offline suites run in **CI on every push/PR** (`.github/workflows/ci.yml`). The C# layer is not built in CI — it requires the licensed SolidWorks interop assemblies; C# behavior is verified live instead.
 
 ---

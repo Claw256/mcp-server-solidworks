@@ -104,6 +104,16 @@ def assess(art, cfg):
     """
     views = {v["vid"]: v for v in art.get("views", [])}
     bends = art.get("bend_notes") or []
+    # Units: every length below is lowered as mm. The reader converts a KNOWN $INSUNITS to mm itself
+    # (sheet.units_converted_from_mm_per_unit = the factor applied), so a converted sheet is fine.
+    # What is refused: an unknown code (None), or a non-mm sheet whose artifact does not record the
+    # matching conversion -- it would build 25.4x too small without a word.
+    sh = art.get("sheet") or {}
+    mm_per_unit = sh.get("units_mm_per_unit", 1.0)
+    applied = sh.get("units_converted_from_mm_per_unit", 1.0)
+    if mm_per_unit is None or (mm_per_unit != 1.0 and applied != mm_per_unit):
+        return _fail("units_not_mm", "$INSUNITS=%r is not a known unit the reader converts (%s mm per "
+                     "unit, %s applied)" % (sh.get("units"), mm_per_unit, applied))
     if not bends:
         return _fail("no_bend_notes", "no UP/DOWN flat-pattern annotation — v1 handles sheet-metal "
                                       "flat patterns only")
@@ -183,6 +193,17 @@ def assess(art, cfg):
             return _fail("fixed_point_ambiguous",
                          "the blank's centroid is %.2f mm from a bend line (need %.2f)"
                          % (_point_to_segment(fixed, a, c), clearance))
+
+    # --- G6: one IR bend per DIRECTION group carries ONE angle and ONE radius (lower_flat_pattern).
+    # Differing values inside a group would silently take the first row's, so refuse instead.
+    by_dir = {}
+    for b in paired:
+        by_dir.setdefault(b["dir"], []).append(b)
+    for direction, rows in by_dir.items():
+        if len({(round(r["angle_deg"], 4), round(r["radius"], 4)) for r in rows}) > 1:
+            return _fail("mixed_bends_in_group",
+                         "%s bends differ in angle/radius: %s" % (direction, sorted(
+                             {(r["angle_deg"], r["radius"]) for r in rows})))
 
     blank_area = outer["area"] - sum(lp["area"] for lp in cutouts)
     return {

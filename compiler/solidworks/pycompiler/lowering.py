@@ -58,10 +58,10 @@ def _offset(node):
     return float(ref.get("offset") or 0.0)
 
 
-def _rectangle_op(width, height, note, construction=False):
+def _rectangle_op(width, height, note, construction=False, cx=0.0, cy=0.0):
     w = float(width) / 2.0
     h = float(height) / 2.0
-    params = {"entity_type": "rectangle", "x1": -w, "y1": -h, "x2": w, "y2": h}
+    params = {"entity_type": "rectangle", "x1": cx - w, "y1": cy - h, "x2": cx + w, "y2": cy + h}
     if construction:
         params["construction"] = True
     return Op("add_sketch_entity", params, note)
@@ -112,7 +112,8 @@ def _profile_op(prim):
     kind = prim.get("kind")
     construction = prim.get("construction") is True
     if kind == "rectangle":
-        return _rectangle_op(prim["width"], prim["height"], "rectangle", construction)
+        return _rectangle_op(prim["width"], prim["height"], "rectangle", construction,
+                             float(prim.get("cx") or 0.0), float(prim.get("cy") or 0.0))
     if kind == "circle":
         params = {"entity_type": "circle",
                   "cx": float(prim.get("cx") or 0.0), "cy": float(prim.get("cy") or 0.0),
@@ -255,13 +256,16 @@ def lower_revolve(node):
     (the execution layer snaps near-360° to an exact full revolve)."""
     axis = node["axis"]
     angle_rad = float(node.get("angle") or (2.0 * math.pi))
-    return [Op("extrude_feature",
-               {"feature_type": "revolve",
-                "angle": round(math.degrees(angle_rad), 6),
-                "axis_x1": float(axis["x1"]), "axis_y1": float(axis["y1"]),
-                "axis_x2": float(axis["x2"]), "axis_y2": float(axis["y2"])},
-               "revolve %.6g rad about (%g,%g)-(%g,%g)"
-               % (angle_rad, axis["x1"], axis["y1"], axis["x2"], axis["y2"]))]
+    params = {"feature_type": "revolve",
+              "angle": round(math.degrees(angle_rad), 6),
+              "axis_x1": float(axis["x1"]), "axis_y1": float(axis["y1"]),
+              "axis_x2": float(axis["x2"]), "axis_y2": float(axis["y2"])}
+    cut = node.get("operation") == "cut"
+    if cut:
+        params["revolve_cut"] = True
+    return [Op("extrude_feature", params,
+               "revolve%s %.6g rad about (%g,%g)-(%g,%g)"
+               % (" cut" if cut else "", angle_rad, axis["x1"], axis["y1"], axis["x2"], axis["y2"]))]
 
 
 def lower_circular_pattern(node):
@@ -449,17 +453,124 @@ def lower_mate(node, sides):
                % (node["mate_type"], an, ak, int(ai), bn, bk, int(bi)))]
 
 
-def lower_hole(node, face_index, center2d):
-    """hole -> create_sketch(on_face, face_index) + circle at the resolved centre + through cut."""
+EDGE_RING = "__edge_ring__"     # op-param marker: the compiler resolves it to edge_indices at run time
+
+
+def _cut_params(depth):
+    if depth in ("through_all", "through"):
+        return {"feature_type": "cut", "through": True}
+    return {"feature_type": "cut", "depth": float(depth)}
+
+
+SKETCH_FRAME_DECL = "__sketch_frame__"   # op-param marker: the compiler pops it and declares THIS frame for the sketch
+AXIS_IN_FRAME = "__axis_in_frame__"       # op-param marker: revolve axis coords are in the declared frame (transformed like entities)
+
+
+def csink_is_90(node):
+    cs = node.get("csink") or {}
+    return abs(float(cs.get("angle", math.pi / 2)) - math.pi / 2) <= 0.5 * math.pi / 180.0
+
+
+def _csink_revolve_ops(node, at, n, plane_name, plane_normal):
+    """Countersink of ANY included angle as a revolve CUT. The cone profile is sketched on the datum
+    plane that contains the hole axis (the compiler checked that) in a frame declared as
+    x = axis direction INTO the material, y = in-plane perpendicular; the compiler maps those 2D
+    coords onto whatever frame the datum-plane sketch actually measures. The profile (a trapezoid
+    that does NOT touch the axis, so the axis line is a separate segment) overshoots the face by
+    `e` for a clean cut and stops at the hole wall; the half-cone region inside the already-cut
+    hole is empty, so a profile floor at r/2 is harmless."""
+    d = [-c for c in n]
+    pn = plane_normal
+    ey = [pn[1] * d[2] - pn[2] * d[1], pn[2] * d[0] - pn[0] * d[2], pn[0] * d[1] - pn[1] * d[0]]
     r = float(node["diameter"]) / 2.0
-    cx, cy = center2d
-    return [
-        Op("create_sketch", {"on_face": True, "face_index": int(face_index)},
-           "hole: sketch on top face #%d" % face_index),
-        Op("add_sketch_entity", {"entity_type": "circle", "cx": cx, "cy": cy, "radius": r},
-           "hole: circle at centre"),
-        Op("extrude_feature", {"feature_type": "cut", "through": True}, "hole: through-all cut"),
-    ]
+    big_r = float(node["csink"]["diameter"]) / 2.0
+    half = float(node["csink"].get("angle", math.pi / 2)) / 2.0
+    t = math.tan(half)
+    h = (big_r - r) / t                 # axial depth of the cone down to the hole wall
+    e = 0.0005                          # overshoot above the face
+    pts = [(-e, r / 2.0), (-e, big_r + e * t), (h, r), (h, r / 2.0)]
+    frame = {"origin": list(at), "xdir": d, "ydir": ey}
+    ops = [Op("create_sketch", {"plane": plane_name, "on_face": False, SKETCH_FRAME_DECL: frame},
+              "hole: countersink cone profile sketched on %s (contains the hole axis)" % plane_name)]
+    for i in range(4):
+        (x1, y1), (x2, y2) = pts[i], pts[(i + 1) % 4]
+        ops.append(Op("add_sketch_entity", {"entity_type": "line", "x1": x1, "y1": y1, "x2": x2, "y2": y2},
+                      "hole: countersink profile edge"))
+    ops.append(Op("add_sketch_entity", {"entity_type": "line", "x1": -e, "y1": 0.0, "x2": h, "y2": 0.0},
+                  "hole: countersink revolve axis"))
+    ops.append(Op("extrude_feature",
+                  {"feature_type": "revolve", "angle": 360.0, "revolve_cut": True, AXIS_IN_FRAME: True,
+                   "axis_x1": -e, "axis_y1": 0.0, "axis_x2": h, "axis_y2": 0.0},
+                  "hole: %g-degree countersink revolve cut" % round(math.degrees(2.0 * half), 4)))
+    return ops
+
+
+def lower_hole(node, face_index, plan):
+    """hole -> sketch on the face + circle(s) + cut(s) [+ a chamfer for a countersink].
+
+    `plan` is what the compiler resolved: {"at": [x,y,z]|None, "normal": [nx,ny,nz]|None}.
+    * Legacy form (plan['at'] is None; also accepted: a bare (cx, cy) tuple): the origin-centred top
+      face, circle at (0, 0), through-all cut -- byte-for-byte the v0.5 behaviour.
+    * `at` form: the circle is at (0, 0) of a sketch FRAME centred on `at` (the compiler declares that
+      frame for the node, so the existing frame transform maps it onto whatever frame the rebuild
+      measures -- no assumption about how SolidWorks orients a face sketch).
+    * counterbore: pocket first (cbore circle, blind), then the shank cut from the pocket FLOOR, picked
+      by a point on it (the face index of the floor does not exist until the pocket is cut).
+    * countersink: a 90-degree chamfer on the hole rim (distance = radial setback on both faces).
+    * thread: not modelled -- the hole is cut at `diameter` (tap-drill) and the note records the size.
+    """
+    if isinstance(plan, (tuple, list)):
+        plan = {"at": None, "normal": None}
+    r = float(node["diameter"]) / 2.0
+    depth = node.get("depth", "through_all")
+    if plan.get("at") is None:
+        return [
+            Op("create_sketch", {"on_face": True, "face_index": int(face_index)},
+               "hole: sketch on top face #%d" % face_index),
+            Op("add_sketch_entity", {"entity_type": "circle", "cx": 0.0, "cy": 0.0, "radius": r},
+               "hole: circle at centre"),
+            Op("extrude_feature", _cut_params(depth), "hole: through-all cut"),
+        ]
+
+    at, n = plan["at"], plan["normal"]
+    thread = node.get("thread")
+    tnote = (" [thread %s recorded, not modelled]" % thread["size"]) if thread else ""
+    cb, cs = node.get("cbore"), node.get("csink")
+    ops = []
+    if cb:
+        cbd = float(cb["depth"])
+        ops += [
+            Op("create_sketch", {"on_face": True, "face_index": int(face_index)},
+               "hole: sketch on face #%d at %s" % (face_index, [round(c, 6) for c in at])),
+            Op("add_sketch_entity", {"entity_type": "circle", "cx": 0.0, "cy": 0.0,
+                                     "radius": float(cb["diameter"]) / 2.0}, "hole: counterbore circle"),
+            Op("extrude_feature", {"feature_type": "cut", "depth": cbd}, "hole: counterbore pocket %g m" % cbd),
+            Op("create_sketch", {"on_face": True, "face_x": at[0] - n[0] * cbd, "face_y": at[1] - n[1] * cbd,
+                                 "face_z": at[2] - n[2] * cbd}, "hole: sketch on the counterbore floor"),
+            Op("add_sketch_entity", {"entity_type": "circle", "cx": 0.0, "cy": 0.0, "radius": r},
+               "hole: shank circle"),
+        ]
+        shank = "through_all" if depth in ("through_all", "through") else float(depth) - cbd
+        ops.append(Op("extrude_feature", _cut_params(shank), "hole: shank cut" + tnote))
+    else:
+        ops += [
+            Op("create_sketch", {"on_face": True, "face_index": int(face_index)},
+               "hole: sketch on face #%d at %s" % (face_index, [round(c, 6) for c in at])),
+            Op("add_sketch_entity", {"entity_type": "circle", "cx": 0.0, "cy": 0.0, "radius": r},
+               "hole: circle"),
+            Op("extrude_feature", _cut_params(depth),
+               "hole: %s cut" % ("through-all" if depth in ("through_all", "through") else "blind") + tnote),
+        ]
+    if cs and plan.get("csink_plane"):
+        ops += _csink_revolve_ops(node, at, n, plan["csink_plane"], plan["csink_plane_normal"])
+    elif cs:
+        setback = (float(cs["diameter"]) - float(node["diameter"])) / 2.0
+        ops.append(Op("add_edge_feature",
+                      {"feature_type": "chamfer", "chamfer_type": "distance_distance",
+                       "radius_or_distance": setback, "distance2": setback,
+                       EDGE_RING: {"center": list(at), "normal": list(n), "radius": r}},
+                      "hole: 90-degree countersink chamfer %g m" % setback))
+    return ops
 
 
 def lower_fillet(node, edge_indices):

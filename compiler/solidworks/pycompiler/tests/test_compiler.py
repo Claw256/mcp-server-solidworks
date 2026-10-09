@@ -573,7 +573,9 @@ def test_sketch_frame_identity_no_transform_and_missing_frame_error():
         "schema_version": "0.5.2-draft", "units": "meters",
         "nodes": [
             {"id": "s1", "type": "sketch", "ref": {"datum": "front"}, "frame": ident,
-             "profile": [{"kind": "line", "x1": 0.001, "y1": 0.002, "x2": 0.003, "y2": 0.004}]},
+             "profile": [{"kind": "line", "x1": 0.001, "y1": 0.002, "x2": 0.003, "y2": 0.004},
+                         {"kind": "line", "x1": 0.003, "y1": 0.004, "x2": 0.005, "y2": 0.001},
+                         {"kind": "line", "x1": 0.005, "y1": 0.001, "x2": 0.001, "y2": 0.002}]},
             {"id": "e1", "type": "extrude", "sketch": "s1", "operation": "boss", "depth": 0.01},
         ],
     }
@@ -1277,7 +1279,7 @@ def test_ellipse_spline_frame_transform_mirror():
         "nodes": [
             {"id": "s1", "type": "sketch", "ref": {"datum": "top"}, "frame": declared,
              "profile": [
-                 {"kind": "spline", "points": [0.0, 0.01, 0.01, 0.02, 0.02, 0.01]},
+                 {"kind": "spline", "points": [0.0, 0.01, 0.01, 0.02, 0.02, 0.01, 0.0, 0.01]},
                  {"kind": "ellipse", "cx": 0.0, "cy": 0.005, "x1": 0.02, "y1": 0.005,
                   "x2": 0.0, "y2": 0.008},
              ]},
@@ -1288,7 +1290,7 @@ def test_ellipse_spline_frame_transform_mirror():
     r = compile_and_run(port, g)
     assert r.status == "COMPLETED", r.to_dict()
     spl = next(p for (t, p) in port.calls if p.get("entity_type") == "spline")
-    assert spl["points"] == [0.0, -0.01, 0.01, -0.02, 0.02, -0.01]
+    assert spl["points"] == [0.0, -0.01, 0.01, -0.02, 0.02, -0.01, 0.0, -0.01]
     ell = next(p for (t, p) in port.calls if p.get("entity_type") == "ellipse")
     assert (ell["cy"], ell["y1"], ell["y2"]) == (-0.005, -0.005, -0.008)
 
@@ -1410,6 +1412,249 @@ def test_rib_reverse_thickness_dir_passthrough():
     assert r.status == "COMPLETED", r.to_dict()
     rib = port.calls[-1][1]
     assert rib == {"thickness": 0.005, "two_sided": False, "reverse_thickness_dir": True}
+
+
+# --- Phase 4 validation hardening (pre-flight checks that catch silent wrong parts) -------------
+def _validate(nodes):
+    from pycompiler.ir_schema import validate
+    return validate({"schema_version": "0.7.2-draft", "units": "meters", "nodes": nodes})
+
+
+def _plate(**over):
+    nodes = [{"id": "b", "type": "box", "width": 0.1, "depth": 0.05, "height": 0.02}]
+    nodes[0].update(over)
+    return nodes
+
+
+def test_unknown_node_key_rejected_but_annotations_allowed():
+    errs = _validate(_plate(heigth=0.02))
+    assert any("unknown field 'heigth'" in e for e in errs), errs
+    assert _validate(_plate(_intent="base plate", hint="x")) == []
+
+
+def test_millimetre_values_rejected_as_meters_graph():
+    errs = _validate(_plate(width=100))
+    assert any("METERS" in e and "width" in e for e in errs), errs
+    errs = _validate([{"id": "s", "type": "sketch",
+                       "profile": [{"kind": "circle", "diameter": 12, "cx": 50, "cy": 0}]}])
+    assert any("METERS" in e for e in errs), errs
+
+
+def test_degrees_in_radians_field_rejected():
+    nodes = [{"id": "s", "type": "sketch", "profile": [{"kind": "line", "x1": 0, "y1": 0, "x2": 0.1, "y2": 0}]},
+             {"id": "r", "type": "revolve", "sketch": "s", "axis": {"x1": 0, "y1": 0, "x2": 0.1, "y2": 0},
+              "angle": 90}]
+    errs = _validate(nodes)
+    assert any("RADIANS" in e for e in errs), errs
+
+
+def test_open_contour_into_extrude_rejected_closed_accepted():
+    open_tri = [{"kind": "line", "x1": 0, "y1": 0, "x2": 0.1, "y2": 0},
+                {"kind": "line", "x1": 0.1, "y1": 0, "x2": 0.1, "y2": 0.05}]
+    ext = {"id": "e", "type": "extrude", "sketch": "s", "operation": "boss", "depth": 0.01}
+    errs = _validate([{"id": "s", "type": "sketch", "profile": open_tri}, ext])
+    assert any("does not close" in e for e in errs), errs
+    closed = open_tri + [{"kind": "line", "x1": 0.1, "y1": 0.05, "x2": 0, "y2": 0}]
+    assert _validate([{"id": "s", "type": "sketch", "profile": closed}, ext]) == []
+    # an open sketch NOT consumed by an extrude (a bend line / sweep path) is fine
+    assert _validate([{"id": "s", "type": "sketch", "profile": open_tri}]) == []
+
+
+def test_bad_arc_radius_rejected():
+    arc = {"kind": "arc", "cx": 0, "cy": 0, "x1": 0.05, "y1": 0, "x2": 0, "y2": 0.08, "dir": 1}
+    ext = {"id": "e", "type": "extrude", "sketch": "s", "operation": "boss", "depth": 0.01}
+    errs = _validate([{"id": "s", "type": "sketch", "profile": [arc]}, ext])
+    assert any("not a circular arc" in e for e in errs), errs
+
+
+def test_rectangle_centre_offset_lowers_to_offset_corners():
+    g = {"schema_version": "0.7.2-draft", "units": "meters", "nodes": [
+        {"id": "s", "type": "sketch", "ref": {"datum": "top"},
+         "profile": [{"kind": "rectangle", "width": 0.04, "height": 0.02, "cx": 0.05, "cy": -0.01}]},
+        {"id": "e", "type": "extrude", "sketch": "s", "operation": "cut", "depth": 0.005}]}
+    port = FakePort()
+    r = compile_and_run(port, g)
+    assert r.status == "COMPLETED", r.to_dict()
+    rect = next(p for (t, p) in port.calls if p.get("entity_type") == "rectangle")
+    got = (rect["x1"], rect["y1"], rect["x2"], rect["y2"])
+    assert all(abs(a - b) < 1e-12 for a, b in zip(got, (0.03, -0.02, 0.07, 0.0))), got
+
+
+# --- hole variants (IR 0.8): any face, any point, blind, counterbore, countersink, tapped -----------
+_TOP_FRAME = {"origin": [0.0, 0.05, 0.0], "xdir": [1.0, 0.0, 0.0], "ydir": [0.0, 0.0, -1.0]}   # normal +Y
+_SIDE_FRAME = {"origin": [0.025, 0.0, 0.0], "xdir": [0.0, 1.0, 0.0], "ydir": [0.0, 0.0, 1.0]}  # normal +X
+
+
+def _hole_graph(**hole):
+    node = {"id": "n2", "type": "hole",
+            "ref": {"node_face": {"node": "n1", "selector": "top"}},
+            "diameter": 0.01, "depth": "through_all"}
+    node.update(hole)
+    return {"schema_version": "0.8.0-draft", "units": "meters", "nodes": [
+        {"id": "n1", "type": "box", "ref": {"datum": "top"}, "width": 0.05, "depth": 0.05, "height": 0.05},
+        node]}
+
+
+def _circle_calls(port):
+    return [p for (t, p) in port.calls if t == "add_sketch_entity"][1:]       # [0] is the box rectangle
+
+
+def _close(a, b, tol=1e-9):
+    return all(abs(x - y) <= tol for x, y in zip(a, b))
+
+
+def test_hole_at_offcentre_point_maps_through_the_measured_frame():
+    port = FakePort(sketch_frame=_TOP_FRAME)
+    r = compile_and_run(port, _hole_graph(at=[0.01, 0.05, 0.005]))
+    assert r.status == "COMPLETED", r.to_dict()
+    c = _circle_calls(port)[0]
+    assert _close((c["cx"], c["cy"], c["radius"]), (0.01, -0.005, 0.005)), c
+    assert [p for (t, p) in port.calls if t == "extrude_feature"][-1] == {"feature_type": "cut", "through": True}
+
+
+def test_hole_blind_depth_and_thread_note():
+    port = FakePort(sketch_frame=_TOP_FRAME)
+    g = _hole_graph(at=[0, 0.05, 0], depth=0.02, thread={"size": "M10x1.5", "depth": 0.015})
+    r = compile_and_run(port, g)
+    assert r.status == "COMPLETED", r.to_dict()
+    assert [p for (t, p) in port.calls if t == "extrude_feature"][-1] == {"feature_type": "cut", "depth": 0.02}
+    notes = [o["note"] for n in r.node_log for o in n["ops"]]
+    assert any("M10x1.5" in n and "not modelled" in n for n in notes), notes
+
+
+def test_counterbore_cuts_pocket_then_shank_from_the_floor():
+    port = FakePort(sketch_frame=_TOP_FRAME)
+    g = _hole_graph(at=[0.01, 0.05, 0.0], cbore={"diameter": 0.016, "depth": 0.004})
+    r = compile_and_run(port, g)
+    assert r.status == "COMPLETED", r.to_dict()
+    sk = [p for (t, p) in port.calls if t == "create_sketch"][1:]
+    assert sk[0] == {"on_face": True, "face_index": 0}
+    assert sk[1]["on_face"] is True and "face_index" not in sk[1]
+    assert _close((sk[1]["face_x"], sk[1]["face_y"], sk[1]["face_z"]), (0.01, 0.046, 0.0)), sk[1]
+    circles = _circle_calls(port)
+    assert [round(c["radius"], 6) for c in circles] == [0.008, 0.005]
+    assert all(abs(c["cy"]) < 1e-12 and abs(c["cx"] - 0.01) < 1e-9 for c in circles)
+    cuts = [p for (t, p) in port.calls if t == "extrude_feature"][1:]
+    assert cuts == [{"feature_type": "cut", "depth": 0.004}, {"feature_type": "cut", "through": True}]
+
+
+def test_countersink_chamfers_the_rim_found_by_geometry():
+    rim = json.dumps({"edge_count": 2, "edges": [
+        {"i": 3, "mid": [0.005, 0.05, 0.0], "length": 0.0314},        # on the r=5 mm circle at the face
+        {"i": 4, "mid": [0.005, 0.0, 0.0], "length": 0.0314}]})       # the same circle at the bottom
+    port = FakePort(sketch_frame=_TOP_FRAME, edges=rim)
+    g = _hole_graph(at=[0, 0.05, 0], csink={"diameter": 0.016})
+    r = compile_and_run(port, g)
+    assert r.status == "COMPLETED", r.to_dict()
+    chamfer = [p for (t, p) in port.calls if t == "add_edge_feature"][0]
+    assert chamfer["edge_indices"] == "[3]" and "__edge_ring__" not in chamfer
+    assert chamfer["chamfer_type"] == "distance_distance"
+    assert abs(chamfer["radius_or_distance"] - 0.003) < 1e-12 and abs(chamfer["distance2"] - 0.003) < 1e-12
+
+
+def test_hole_on_a_side_face_by_anchor():
+    port = FakePort(sketch_frame=_SIDE_FRAME)
+    g = _hole_graph(at=[0.025, 0.02, 0.01])
+    g["nodes"][1]["ref"] = {"face": {"near": [0.025, 0.01, 0.01]}}
+    r = compile_and_run(port, g)
+    assert r.status == "COMPLETED", r.to_dict()
+    assert [p for (t, p) in port.calls if t == "create_sketch"][1] == {"on_face": True, "face_index": 2}
+    c = _circle_calls(port)[0]
+    assert _close((c["cx"], c["cy"]), (0.02, 0.01)), c
+
+
+def test_hole_centre_off_the_face_plane_is_rejected_before_cutting():
+    port = FakePort(sketch_frame=_SIDE_FRAME)
+    g = _hole_graph(at=[0.03, 0.02, 0.01])
+    g["nodes"][1]["ref"] = {"face": {"near": [0.025, 0.01, 0.01]}}
+    r = compile_and_run(port, g)
+    assert r.status == "FAILED" and r.error["code"] == "REFERENCE_MISMATCH", r.to_dict()
+    assert "extrude_feature" not in [t for (t, _p) in port.calls][3:]
+
+
+def test_hole_validation_rejections():
+    def errs(**kw):
+        from pycompiler.ir_schema import validate
+        return validate(_hole_graph(**kw))
+    assert any("cbore.diameter must exceed" in e for e in errs(cbore={"diameter": 0.008, "depth": 0.004}, at=[0, 0.05, 0]))
+    assert any("less than the total hole depth" in e for e in errs(
+        cbore={"diameter": 0.016, "depth": 0.03}, depth=0.02, at=[0, 0.05, 0]))
+    assert any("mutually exclusive" in e for e in errs(
+        cbore={"diameter": 0.016, "depth": 0.004}, csink={"diameter": 0.016}, at=[0, 0.05, 0]))
+    assert any("INCLUDED angle" in e for e in errs(csink={"diameter": 0.016, "angle": 3.5}, at=[0, 0.05, 0]))
+    assert errs(csink={"diameter": 0.016, "angle": 1.0472}, at=[0, 0.05, 0]) == []
+    assert any("exactly one of ref.node_face" in e for e in errs(ref={}))
+    assert any("needs 'at'" in e for e in errs(ref={"face": {"near": [0, 0.05, 0]}}))
+    assert any("METERS" in e for e in errs(at=[10.0, 50.0, 0.0]))
+    assert errs(at=[0, 0.05, 0], csink={"diameter": 0.016}) == []
+
+
+def _revolve_graph(operation=None):
+    rev = {"id": "r", "type": "revolve", "sketch": "s", "axis": {"x1": 0.0, "y1": 0.0, "x2": 0.0, "y2": 0.05}}
+    if operation is not None:
+        rev["operation"] = operation
+    return {"schema_version": "0.8.0-draft", "units": "meters", "nodes": [
+        {"id": "s", "type": "sketch", "ref": {"datum": "front"},
+         "profile": [{"kind": "line", "x1": 0.0, "y1": 0.0, "x2": 0.0, "y2": 0.05, "construction": True},
+                     {"kind": "rectangle", "width": 0.01, "height": 0.02, "cx": 0.01, "cy": 0.02}]},
+        rev]}
+
+
+def test_revolve_operation_validation_and_lowering():
+    from pycompiler.ir_schema import validate
+    assert validate(_revolve_graph()) == [] and validate(_revolve_graph("boss")) == []
+    assert validate(_revolve_graph("cut")) == []
+    assert any("revolve 'operation'" in e for e in validate(_revolve_graph("spin")))
+    for op, expect in ((None, None), ("boss", None), ("cut", True)):
+        port = FakePort()
+        r = compile_and_run(port, _revolve_graph(op))
+        assert r.status == "COMPLETED", r.to_dict()
+        rev = [p for (t, p) in port.calls if t == "extrude_feature"][-1]
+        assert rev.get("revolve_cut") is expect, rev
+        assert rev["feature_type"] == "revolve"
+
+
+class _FramesPort(FakePort):
+    """FakePort whose create_sketch echoes a different MEASURED frame per call (face, then datum plane)."""
+    def __init__(self, frames, **kw):
+        FakePort.__init__(self, **kw)
+        self._frames = list(frames)
+
+    def execute(self, tool, params, state_version):
+        resp = FakePort.execute(self, tool, params, state_version)
+        if tool == "create_sketch" and self._frames:
+            resp["result_geometry"] = {"frame": self._frames.pop(0)}
+        return resp
+
+
+_FRONT_FRAME = {"origin": [0.0, 0.0, 0.0], "xdir": [1.0, 0.0, 0.0], "ydir": [0.0, 1.0, 0.0]}
+
+
+def test_countersink_non_90_is_a_revolve_cut_on_the_datum_plane_with_the_axis():
+    import math
+    port = _FramesPort([_FRONT_FRAME, _TOP_FRAME, _FRONT_FRAME], sketch_frame=_TOP_FRAME)
+    # frames consumed by create_sketch calls: box sketch, hole face sketch, cone sketch
+    g = _hole_graph(at=[0, 0.05, 0], csink={"diameter": 0.016, "angle": math.radians(120)})
+    r = compile_and_run(port, g)
+    assert r.status == "COMPLETED", r.to_dict()
+    assert not [1 for (t, _p) in port.calls if t == "add_edge_feature"]
+    sk = [p for (t, p) in port.calls if t == "create_sketch"]
+    assert sk[-1] == {"plane": "Front Plane", "on_face": False}, sk[-1]
+    rev = [p for (t, p) in port.calls if t == "extrude_feature"][-1]
+    assert rev["feature_type"] == "revolve" and rev["revolve_cut"] is True and "__axis_in_frame__" not in rev
+    # declared (u along -Y from the face, v along +X) -> measured Front (x=X, y=Y): axis runs along Y at x=0
+    assert abs(rev["axis_x1"]) < 1e-9 and abs(rev["axis_x2"]) < 1e-9, rev
+    h = (0.008 - 0.005) / math.tan(math.radians(60))
+    assert abs(rev["axis_y1"] - 0.0505) < 1e-9 and abs(rev["axis_y2"] - (0.05 - h)) < 1e-9, rev
+
+
+def test_countersink_non_90_off_the_datum_planes_is_refused():
+    import math
+    port = _FramesPort([_FRONT_FRAME, _TOP_FRAME], sketch_frame=_TOP_FRAME)
+    g = _hole_graph(at=[0.01, 0.05, 0.01], csink={"diameter": 0.016, "angle": math.radians(120)})
+    r = compile_and_run(port, g)
+    assert r.status == "FAILED" and "datum plane" in r.error["message"], r.to_dict()
+    assert "extrude_feature" not in [t for (t, _p) in port.calls][3:]
 
 
 _TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
