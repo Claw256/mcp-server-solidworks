@@ -575,12 +575,12 @@ def hole_wizard(
     hole_type: Literal["counterbore", "countersink", "hole", "tap"],
     standard: Literal["ansi_inch", "ansi_metric", "iso", "din", "jis"],
     size: str,
-    points: str,
+    points: str | list[list[float]],
     face_index: int = -1,
     face_x: float | None = None,
     face_y: float | None = None,
     face_z: float | None = None,
-    fastener_type: str = "default",
+    fastener_type: str | int = "default",
     end_condition: Literal["blind", "through_all"] = "blind",
     depth: float = 0.0,
     diameter: float = 0.0,
@@ -594,13 +594,15 @@ def hole_wizard(
     """Place a STANDARD SOLIDWORKS Hole Wizard hole (real counterbore / countersink / clearance / tapped
     hole with a thread callout) via IFeatureManager.HoleWizard5, at one or more points on a planar face.
     Target face: face_index (from analyze_model('faces')) OR a point face_x/face_y/face_z ON the face.
-    points: JSON array of [x,y,z] METER hole centres lying ON that face, e.g. '[[0.01,0.05,0]]'.
+    points: array (or JSON string) of [x,y,z] METER hole centres lying ON that face, e.g. [[0.01,0.05,0]].
     hole_type: counterbore | countersink | hole (clearance) | tap (tapped).
     standard: ansi_inch | ansi_metric | iso | din | jis. fastener_type: omit for the default of that
         standard + hole_type (ISO: tap 147, clearance 144, cap-screw cbore 139, flat-head csink 140;
         ANSI metric 43/40/33/35), or pass a swWzdHoleStandardFastenerTypes_e integer. A fastener or
         size that does not belong to the standard + hole_type FAILS (HOLE_WIZARD_FAILED).
-    size: e.g. 'M6' (must be valid for that fastener). end_condition: blind (needs depth) | through_all.
+    size: e.g. 'M6' (metric) or '1/4-20' / '#10-24' (inch tap). Metric tap pitch is added automatically
+        (coarse 'M6' -> 'M6x1.0'; or give 'M6x1'); for non-tap holes a pitch is stripped.
+    end_condition: blind (needs depth) | through_all.
     depth/diameter in METERS (diameter 0 = the standard's size); cbore_diameter/cbore_depth METERS;
     csink_diameter METERS and csink_angle DEGREES (included angle); thread_depth METERS (tap only).
     Call it AFTER the body exists (it is not part of the IR; IR hole.thread is recorded-only).
