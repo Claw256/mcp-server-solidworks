@@ -43,12 +43,11 @@ class Running:
             return (await c.get(f"{self.url}/health")).json()["agent_connected"]
 
 
-@pytest.fixture
-def gateway(monkeypatch):
+def _serve(monkeypatch, blob=None):
     monkeypatch.setattr(relay_module, "PRESENCE_TTL", 2)   # so "PC went away" is observable in seconds
     port = _free_port()
     settings = make_settings(port)
-    app = create_app(settings, redis=fakeredis.FakeAsyncRedis(decode_responses=True))
+    app = create_app(settings, redis=fakeredis.FakeAsyncRedis(decode_responses=True), blob=blob)
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
@@ -59,3 +58,20 @@ def gateway(monkeypatch):
     yield Running(settings.public_url, app, settings)
     server.should_exit = True
     thread.join(timeout=10)
+
+
+@pytest.fixture
+def gateway(monkeypatch):
+    yield from _serve(monkeypatch)
+
+
+@pytest.fixture
+def fake_blob():
+    from solidpilot_gateway.blobstore import FakeBlob
+    return FakeBlob()
+
+
+@pytest.fixture
+def gateway_blob(monkeypatch, fake_blob):
+    """A gateway with file deliveries enabled, backed by the in-memory blob store."""
+    yield from _serve(monkeypatch, fake_blob)

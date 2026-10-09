@@ -158,7 +158,7 @@ def _load_tools():
         import server
         from mcp.server.mcpserver.exceptions import ToolError
         from mcp.server.mcpserver.utilities.types import Image
-        for name in ("get_file", "stage_file"):     # importing agent registers these on the shared server.mcp;
+        for name in ("get_file", "stage_file", "deliver_document"):     # importing agent registers these on the shared server.mcp;
             try:                                    # drop them so test_schema_contract (adapter-only surface) stays valid
                 server.mcp.remove_tool(name)
             except Exception:  # noqa: BLE001

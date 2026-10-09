@@ -5,6 +5,7 @@ import asyncio
 import base64
 from typing import Any
 
+from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.lowlevel.helper_types import ReadResourceContents
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ResourceError, ToolError
@@ -17,7 +18,11 @@ from mcp_types import (
     Tool,
 )
 
+from .deliveries import Deliveries
 from .relay import AgentError, AgentOffline, AgentRelay
+
+DELIVERY_TOOL = "deliver_document"
+SLOT_ARG = "delivery_slot"   # injected by the gateway; hidden from the model's schema
 
 OFFLINE_MESSAGE = (
     "AGENT_OFFLINE: the SolidWorks PC is not connected to the gateway. Ask the user to check that the PC is on "
@@ -28,9 +33,10 @@ OFFLINE_MESSAGE = (
 class RelayServer(MCPServer):
     """MCPServer whose tool/resource/prompt surface is whatever the PC agent last reported."""
 
-    def __init__(self, relay: AgentRelay, **kwargs: Any):
+    def __init__(self, relay: AgentRelay, deliveries: Deliveries | None = None, **kwargs: Any):
         super().__init__(**kwargs)
         self._relay = relay
+        self._deliveries = deliveries
         self._schemas: dict[str, Any] = {}
 
     # Argument validation is the agent's job (it holds the real schemas). The SDK only uses this
@@ -41,9 +47,29 @@ class RelayServer(MCPServer):
     async def list_tools(self) -> list[Tool]:
         tools = (await self._relay.catalog()).get("tools", [])
         self._schemas = {t["name"]: t.get("inputSchema") for t in tools}
-        return [Tool.model_validate(t) for t in tools]
+        return [Tool.model_validate(self._hide_slot(t)) for t in tools]
+
+    @staticmethod
+    def _hide_slot(tool: dict[str, Any]) -> dict[str, Any]:
+        """The delivery slot is the gateway's business; the model must neither see nor choose it."""
+        if tool.get("name") != DELIVERY_TOOL:
+            return tool
+        schema = dict(tool.get("inputSchema") or {})
+        schema["properties"] = {k: v for k, v in (schema.get("properties") or {}).items() if k != SLOT_ARG}
+        if "required" in schema:
+            schema["required"] = [k for k in schema["required"] if k != SLOT_ARG]
+        return {**tool, "inputSchema": schema}
 
     async def call_tool(self, name, arguments, context=None):  # type: ignore[override]
+        if name == DELIVERY_TOOL:
+            if self._deliveries is None:
+                raise ToolError("DELIVERY_UNAVAILABLE: file delivery is not configured on this gateway "
+                                "(BLOB_READ_WRITE_TOKEN of a private Vercel Blob store is missing).")
+            access = get_access_token()
+            if access is None:
+                raise ToolError("UNAUTHORIZED: no authenticated session for this call.")
+            # Bind the delivery to THIS session; any model-supplied slot is discarded.
+            arguments = {**(arguments or {}), SLOT_ARG: await self._deliveries.open_slot(access.client_id)}
         try:
             result = await self._relay.request("tools/call", {"name": name, "arguments": arguments})
         except AgentOffline as e:

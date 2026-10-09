@@ -1,0 +1,22 @@
+{
+ "deleg": "eyJzdG9yZUlkIjoic3RvcmVfQUJDMTIzIiwicGF0aG5hbWUiOiIqIiwib3BlcmF0aW9ucyI6WyJwdXQiLCJnZXQiXSwidmFsaWRVbnRpbCI6NDEwMjQ0NDgwMDAwMCwibWF4aW11bVNpemVJbkJ5dGVzIjo1MjQyODgwMCwiYWxsb3dlZENvbnRlbnRUeXBlcyI6WyJhcHBsaWNhdGlvbi9vY3RldC1zdHJlYW0iXX0.sigpart",
+ "key": "secret-signing-key",
+ "cases": [
+  {
+   "op": "put",
+   "pathname": "deliveries/abc/part ü.sldprt",
+   "url": "https://vercel.com/api/blob/?pathname=deliveries%2Fabc%2Fpart+%C3%BC.sldprt&vercel-blob-valid-until=4102444700000&vercel-blob-allowed-content-types=application%2Foctet-stream&vercel-blob-maximum-size-in-bytes=1234567&vercel-blob-add-random-suffix=false&vercel-blob-allow-overwrite=false&vercel-blob-delegation=eyJzdG9yZUlkIjoic3RvcmVfQUJDMTIzIiwicGF0aG5hbWUiOiIqIiwib3BlcmF0aW9ucyI6WyJwdXQiLCJnZXQiXSwidmFsaWRVbnRpbCI6NDEwMjQ0NDgwMDAwMCwibWF4aW11bVNpemVJbkJ5dGVzIjo1MjQyODgwMCwiYWxsb3dlZENvbnRlbnRUeXBlcyI6WyJhcHBsaWNhdGlvbi9vY3RldC1zdHJlYW0iXX0.sigpart&vercel-blob-signature=p2RbyIDuRoB592hlybvmQxU5loBrorzMW-Gv8iKCpdA"
+  },
+  {
+   "op": "get",
+   "pathname": "deliveries/abc/part.sldprt",
+   "url": "https://abc123.private.blob.vercel-storage.com/deliveries/abc/part.sldprt?vercel-blob-valid-until=4102444700000&vercel-blob-delegation=eyJzdG9yZUlkIjoic3RvcmVfQUJDMTIzIiwicGF0aG5hbWUiOiIqIiwib3BlcmF0aW9ucyI6WyJwdXQiLCJnZXQiXSwidmFsaWRVbnRpbCI6NDEwMjQ0NDgwMDAwMCwibWF4aW11bVNpemVJbkJ5dGVzIjo1MjQyODgwMCwiYWxsb3dlZENvbnRlbnRUeXBlcyI6WyJhcHBsaWNhdGlvbi9vY3RldC1zdHJlYW0iXX0.sigpart&vercel-blob-signature=876BaEs0iKbPLUEOGagahGrHkR7z84irjPRdieRtK08"
+  },
+  {
+   "op": "get",
+   "pathname": "deliveries/abc/part.sldprt",
+   "url": "https://abc123.private.blob.vercel-storage.com/deliveries/abc/part.sldprt?vercel-blob-delegation=eyJzdG9yZUlkIjoic3RvcmVfQUJDMTIzIiwicGF0aG5hbWUiOiIqIiwib3BlcmF0aW9ucyI6WyJwdXQiLCJnZXQiXSwidmFsaWRVbnRpbCI6NDEwMjQ0NDgwMDAwMCwibWF4aW11bVNpemVJbkJ5dGVzIjo1MjQyODgwMCwiYWxsb3dlZENvbnRlbnRUeXBlcyI6WyJhcHBsaWNhdGlvbi9vY3RldC1zdHJlYW0iXX0.sigpart&vercel-blob-signature=7UWpjyM_fLzBs28tppcpIMadqnIS9eC8OdTD3ycQJ_s",
+   "novalid": true
+  }
+ ]
+}
