@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 using Newtonsoft.Json.Linq;
 using SolidWorks.Interop.sldworks;
 using SolidWorks.Interop.swconst;
@@ -49,6 +51,63 @@ namespace SolidworksExecution.Services
                 default:
                     return null;
             }
+        }
+
+        // ISO metric coarse pitches (mm) by nominal diameter, for tapped holes given without a pitch.
+        private static readonly Dictionary<string, string> HoleWizardCoarsePitch = new Dictionary<string, string>
+        {
+            { "1.6", "0.35" }, { "2", "0.4" }, { "2.5", "0.45" }, { "3", "0.5" }, { "3.5", "0.6" },
+            { "4", "0.7" }, { "5", "0.8" }, { "6", "1" }, { "8", "1.25" }, { "10", "1.5" },
+            { "12", "1.75" }, { "14", "2" }, { "16", "2" }, { "20", "2.5" }, { "24", "3" },
+            { "30", "3.5" }, { "36", "4" },
+        };
+
+        private static readonly Regex HoleWizardMetricSize =
+            new Regex(@"^\s*M\s*(\d+(?:\.\d+)?)\s*(?:[xX]\s*(\d+(?:\.\d+)?))?\s*$", RegexOptions.Compiled);
+
+        // SolidWorks matches Hole Wizard size strings exactly, and the format depends on the hole type
+        // (verified live on SolidWorks 2025): tapped holes need the pitch with at least one decimal
+        // ('M3x0.5', 'M6x1.0', 'M12x1.75'); clearance / counterbore / countersink holes reject a pitch ('M3').
+        // Inch sizes ('1/4-20', '#10-24') and anything unrecognised pass through unchanged.
+        private static string HoleWizardNormalizeSize(string size, string holeType)
+        {
+            Match m = HoleWizardMetricSize.Match(size ?? "");
+            if (!m.Success) return size;
+            string dia = m.Groups[1].Value;
+            if (holeType != "tap") return "M" + dia;
+
+            string pitch = m.Groups[2].Success ? m.Groups[2].Value : null;
+            if (pitch == null && !HoleWizardCoarsePitch.TryGetValue(dia, out pitch)) return size;
+            double pv;
+            if (!double.TryParse(pitch, NumberStyles.Float, CultureInfo.InvariantCulture, out pv)) return size;
+            return "M" + dia + "x" + pv.ToString("0.0##", CultureInfo.InvariantCulture);
+        }
+
+        private static readonly Regex HoleWizardInchTap =
+            new Regex(@"^\s*(?:#\s*(\d+)|(\d+)\s*/\s*(\d+)|(\d*\.\d+|\d+))\s*-\s*(\d+)\s*(?:[A-Za-z].*)?$", RegexOptions.Compiled);
+
+        // For a tapped hole HoleWizard5's Diameter is the TAP DRILL diameter, and 0 makes SolidWorks build a
+        // giant flagged hole, so derive it from the (normalised) size: metric = major - pitch ('M6x1.0' -> 5.0 mm),
+        // inch = major - 1/TPI ('1/4-20' -> 0.2 in, '#10-24' -> 0.148 in). Returns metres, or null if unknown.
+        private static double? HoleWizardTapDrillDiameter(string size)
+        {
+            Match m = HoleWizardMetricSize.Match(size ?? "");
+            if (m.Success && m.Groups[2].Success)
+            {
+                double d, pitch;
+                if (double.TryParse(m.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out d) &&
+                    double.TryParse(m.Groups[2].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out pitch))
+                    return (d - pitch) / 1000.0;
+                return null;
+            }
+            m = HoleWizardInchTap.Match(size ?? "");
+            if (!m.Success) return null;
+            double major;
+            if (m.Groups[1].Success) major = 0.060 + 0.013 * int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
+            else if (m.Groups[2].Success) major = double.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture) / double.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture);
+            else major = double.Parse(m.Groups[4].Value, CultureInfo.InvariantCulture);
+            double tpi = double.Parse(m.Groups[5].Value, CultureInfo.InvariantCulture);
+            return tpi > 0 ? (major - 1.0 / tpi) * 0.0254 : (double?)null;
         }
 
         // The i-th solid-body face (same enumeration as analyze_model(faces) / create_sketch face_index).
@@ -134,6 +193,8 @@ namespace SolidworksExecution.Services
                 if (string.IsNullOrEmpty(size))
                     return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
                         "MISSING_PARAMETER", "size is required (e.g. 'M6'; it must be valid for the standard + fastener).");
+                string requestedSize = size;
+                size = HoleWizardNormalizeSize(size, holeType);
 
                 string endName = (p?.Value<string>("end_condition") ?? "blind").ToLowerInvariant();
                 if (endName != "blind" && endName != "through_all")
@@ -144,6 +205,11 @@ namespace SolidworksExecution.Services
                     : (short)swEndConditions_e.swEndCondBlind;
 
                 double diameter = p?.Value<double?>("diameter") ?? 0.0;
+                if (holeType == "tap" && diameter <= 0)
+                {
+                    double? tapDrill = HoleWizardTapDrillDiameter(size);
+                    if (tapDrill != null) diameter = tapDrill.Value;
+                }
                 double depth = p?.Value<double?>("depth") ?? 0.0;
                 if (endName == "blind" && depth <= 0)
                     return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
@@ -214,30 +280,6 @@ namespace SolidworksExecution.Services
                     return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
                         "INVALID_PARAMETER", "The target face is not planar (Hole Wizard holes need a planar face).");
 
-                // Select each hole centre as a ray against the face (Mark = 0). The sign of IFace2.Normal
-                // relative to the outward direction can depend on the face sense, so a miss is retried
-                // once with the ray flipped before failing.
-                modelDoc.ClearSelection2(true);
-                for (int i = 0; i < centres.Count; i++)
-                {
-                    var c = centres[i];
-                    bool ok = false;
-                    for (int attempt = 0; attempt < 2 && !ok; attempt++)
-                    {
-                        double s = attempt == 0 ? 1.0 : -1.0;
-                        ok = modelDoc.Extension.SelectByRay(
-                            c[0] + s * n[0] * 0.002, c[1] + s * n[1] * 0.002, c[2] + s * n[2] * 0.002,
-                            -s * n[0], -s * n[1], -s * n[2],
-                            0.0001, (int)swSelectType_e.swSelFACES, i > 0, 0, 0);
-                    }
-                    if (!ok)
-                    {
-                        modelDoc.ClearSelection2(true);
-                        return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
-                            "POINT_NOT_ON_FACE", $"points[{i}] ({c[0]}, {c[1]}, {c[2]}) did not hit a face. Each point must lie ON the target planar face.");
-                    }
-                }
-
                 // Value1..Value12 depend on the hole type (see HoleWizard5 remarks); -1 = ignored.
                 double[] v = new double[12];
                 for (int k = 0; k < 12; k++) v[k] = -1;
@@ -260,24 +302,80 @@ namespace SolidworksExecution.Services
                     case (int)swWzdGeneralHoleTypes_e.swWzdTap:
                         length = -1;                              // recorder quirk: -1 at the Length slot for straight taps
                         double? threadDepth = p?.Value<double?>("thread_depth");
-                        v[0] = threadDepth ?? -1;                 // tap thread depth
+                        // tap thread depth; the default (2 x diameter) can exceed a blind hole, so use 75% of its depth
+                        v[0] = threadDepth ?? (endName == "blind" ? depth * 0.75 : -1);
                         break;
-                    default:                                      // plain hole: Value1..7 left at -1
+                    default:                                      // plain hole: Value5/Value6 must be 0 (all -1 => null);
+                        v[4] = 0; v[5] = 0;                       // zeroing every slot warns on blind holes
                         break;
                 }
 
                 bool reverse = p?.Value<bool?>("reverse") ?? false;
 
-                IFeature feature = modelDoc.FeatureManager.HoleWizard5(
-                    genericType, standardIdx.Value, fastener.Value, size, endType,
-                    diameter, depth, length,
-                    v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11],
-                    "", reverse, true, true, true, true, false) as IFeature;
+                // HoleWizard5 only places ONE hole per call (at the first picked location, however many faces are
+                // selected - verified live), so each centre is selected as a ray against the face (Mark = 0) and gets its
+                // own call/feature. The sign of IFace2.Normal relative to the outward direction can depend on the face
+                // sense, so a miss is retried once with the ray flipped. All-or-nothing: any failure undoes the rest.
+                var createdNames = new List<string>();
+                for (int i = 0; i < centres.Count; i++)
+                {
+                    var c = centres[i];
+                    modelDoc.ClearSelection2(true);
+                    bool picked = false;
+                    for (int attempt = 0; attempt < 2 && !picked; attempt++)
+                    {
+                        double s = attempt == 0 ? 1.0 : -1.0;
+                        picked = modelDoc.Extension.SelectByRay(
+                            c[0] + s * n[0] * 0.002, c[1] + s * n[1] * 0.002, c[2] + s * n[2] * 0.002,
+                            -s * n[0], -s * n[1], -s * n[2],
+                            0.0001, (int)swSelectType_e.swSelFACES, false, 0, 0);
+                    }
+                    if (!picked)
+                    {
+                        modelDoc.ClearSelection2(true);
+                        if (createdNames.Count > 0) modelDoc.EditUndo2(createdNames.Count);
+                        return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
+                            "POINT_NOT_ON_FACE", $"points[{i}] ({c[0]}, {c[1]}, {c[2]}) did not hit a face. Each point must lie ON the target planar face." +
+                            (createdNames.Count > 0 ? $" The {createdNames.Count} hole(s) already placed were rolled back." : ""));
+                    }
 
-                if (feature == null)
-                    return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
-                        "HOLE_WIZARD_FAILED",
-                        $"HoleWizard5 returned null. Check that standard '{p?.Value<string>("standard")}', fastener_type {fastener.Value} and size '{size}' are a valid combination for hole_type '{holeType}', and that the points lie on a planar face of a solid body.");
+                    IFeature feature = modelDoc.FeatureManager.HoleWizard5(
+                        genericType, standardIdx.Value, fastener.Value, size, endType,
+                        diameter, depth, length,
+                        v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11],
+                        "", reverse, true, true, true, true, false) as IFeature;
+
+                    if (feature == null)
+                    {
+                        if (createdNames.Count > 0) modelDoc.EditUndo2(createdNames.Count);
+                        return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
+                            "HOLE_WIZARD_FAILED",
+                            $"HoleWizard5 returned null at points[{i}] for hole_type '{holeType}', standard '{p?.Value<string>("standard")}', " +
+                            $"fastener_type {fastener.Value}, " +
+                            $"size '{size}'" + (size != requestedSize ? $" (normalised from '{requestedSize}')" : "") +
+                            $", end_condition {endName}, depth {depth}, diameter {diameter}. " +
+                            "SolidWorks rejects a size string that is not in its list for that fastener (tapped metric sizes need a pitch, e.g. 'M6x1.0'; inch taps look like '1/4-20'), " +
+                            "a blind depth deeper than the body, or points that are not on a planar face of a solid body.");
+                    }
+
+                    // HoleWizard5 can hand back a feature that SolidWorks flags with an error / warning (yellow
+                    // triangle) and whose geometry is wrong (e.g. a tap built with no tap drill cuts a ~50 mm bore).
+                    // Never report that as COMPLETED: roll it back and say what was sent.
+                    bool featureWarning;
+                    int featureError = feature.GetErrorCode2(out featureWarning);
+                    if (featureError != 0 || featureWarning)
+                    {
+                        string badName = feature.Name;
+                        modelDoc.EditUndo2(createdNames.Count + 1);
+                        return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
+                            "HOLE_WIZARD_FEATURE_ERROR",
+                            $"SolidWorks flagged '{badName}' with error code {featureError}{(featureWarning ? " (warning)" : "")}, so it was rolled back. " +
+                            $"Sent: hole_type '{holeType}', standard '{p?.Value<string>("standard")}', fastener_type {fastener.Value}, size '{size}', " +
+                            $"end_condition {endName}, depth {depth}, diameter {diameter}. Check the size / diameter / depth against the standard.");
+                    }
+                    createdNames.Add(feature.Name);
+                }
+                modelDoc.ClearSelection2(true);
 
                 var response = new ExecutionResponse
                 {
@@ -291,7 +389,7 @@ namespace SolidworksExecution.Services
                         ActiveDocument = modelDoc.GetTitle(),
                         DocumentType = "PART",
                         ActiveSketch = null,
-                        Features = new List<string> { feature.Name },
+                        Features = createdNames,
                         Dimensions = new List<string>()
                     },
                     ResultGeometry = BuildBodySummary(modelDoc),

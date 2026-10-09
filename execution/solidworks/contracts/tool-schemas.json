@@ -139,7 +139,7 @@
    "params": {
     "hole_type": "string (required: 'counterbore' | 'countersink' | 'hole' | 'tap')",
     "standard": "string (required: 'ansi_inch' | 'ansi_metric' | 'iso' | 'din' | 'jis')",
-    "size": "string (required — e.g. 'M6'; must be valid for the fastener type)",
+    "size": "string (required — e.g. 'M6', or '1/4-20' / '#10-24' for inch taps; the execution layer normalises it: metric tap sizes get their pitch ('M6' -> 'M6x1.0'), non-tap holes drop it)",
     "points": "string (required — JSON array of [x,y,z] hole centres in meters, ON the target planar face; a real JSON array is also accepted)",
     "face_index": "integer (optional — i-th face from analyze_model(faces); the face must be planar)",
     "face_x": "number (optional — with face_y/face_z: a point ON the planar face, alternative to face_index)",
