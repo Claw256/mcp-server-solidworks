@@ -656,9 +656,10 @@
    "state_version": "integer (required, must match current execution state)",
    "params": {
     "view": "string (optional, default 'isometric': isometric|front|back|left|right|top|bottom|current; the adapter also accepts a comma list)",
-    "width": "integer (optional, default 1280 at the adapter / 1024 in the execution layer; 64-4096; the adapter reduces it to fit the image limits)",
+    "width": "integer (optional, default 1280 at the adapter / 1024 in the execution layer; 64-4096; the adapter reduces the image returned to the model to fit the image limits and the relay size cap; a saved file keeps the requested size)",
     "height": "integer (optional, default 960 at the adapter / 768 in the execution layer; 64-4096)",
-    "file_path": "string (execution layer: required, full .bmp output path; adapter: optional, keeps the first view's BMP there, otherwise a temp file that is deleted)"
+    "file_path": "string (execution layer: required, full .bmp output path; adapter: optional, keeps the first view's full-size BMP there plus a same-name .png, otherwise a temp file that is deleted)",
+    "hires": "boolean (adapter only, optional, default false: keep a full-size file for the first view even without file_path, saved in the staging folder; the execution layer never sees it)"
    }
   },
   "output": "Execution layer: COMPLETED with the .bmp path in CadState.Features. Adapter: [text 'Image n: view WxH; ...', PNG image content...]."
