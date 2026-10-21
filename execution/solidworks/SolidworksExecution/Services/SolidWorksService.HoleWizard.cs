@@ -287,8 +287,8 @@ namespace SolidworksExecution.Services
                 double cbDia = p?.Value<double?>("cbore_diameter") ?? -1;
                 double cbDepth = p?.Value<double?>("cbore_depth") ?? -1;
                 double csDia = p?.Value<double?>("csink_diameter") ?? -1;
-                // csink_angle arrives in DEGREES (model-facing convention); HoleWizard5 takes radians.
-                double? csAngDeg = p?.Value<double?>("csink_angle");
+                // csink_angle_deg arrives in DEGREES (model-facing convention); HoleWizard5 takes radians.
+                double? csAngDeg = p?.Value<double?>("csink_angle_deg");
                 double csAng = csAngDeg != null ? csAngDeg.Value * Math.PI / 180.0 : -1;
                 double length = 0.0;
                 switch (genericType)

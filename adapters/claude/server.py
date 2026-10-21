@@ -8,6 +8,7 @@ shared `mcp` instance from `solidpilot.app` when imported here. State/retry plum
 import inspect
 
 from solidpilot.app import mcp
+from solidpilot import surface
 from solidpilot import bridge  # noqa: F401  (re-exported for agent.py and tests)
 
 # Importing the tool modules registers their tools. Star-imports keep `server.<tool>` working
@@ -57,6 +58,7 @@ def _normalize_tool_surface() -> None:
                 if isinstance(prop, dict):
                     prop.pop("title", None)
             schema.setdefault("additionalProperties", False)
+    surface.annotate(mcp)
 
 
 _normalize_tool_surface()

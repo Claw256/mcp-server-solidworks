@@ -80,7 +80,7 @@ def analyze_model(
         whose direction is ~parallel to axis — for faces that's the planar-face NORMAL (e.g. axis='[0,0,1]' → only
         faces on +Z planes), for edges the chord direction. The response adds total_edge_count/total_face_count so
         you know how many were filtered out. Omitting near preserves the exact historical full-dump behavior.
-    Does NOT increment state_version."""
+    """
     return _call("analyze_model", {"analysis_type": analysis_type, "name": name,
                                    "from_feature": from_feature, "to_feature": to_feature,
                                    "near": near, "k": k, "axis": axis})
@@ -102,9 +102,9 @@ def analyze_slddrw_test(include_geometry: bool = False, include_relations: bool 
       relations, extent, center_marks) are COM constructs that DO NOT EXIST in a DXF.
 
     ⮕ Reconstructing a part from a NATIVE SLDDRW (test/comparison work only)? The FROZEN
-      reverse-reading discipline is deliberately NOT on the MCP surface (ADR-069) — it is the repo
+      reverse-reading discipline is deliberately NOT on the MCP surface — it is the repo
       file `cad-planner/slddrw-testing-recipe-usage.md`. Read it from disk when this tool is the
-      job; port a rule out of it into the active recipe only as a conscious decision (ADR-063).
+      job; port a rule out of it into the active recipe only as a conscious decision.
 
     Read-only, does NOT change state. Requires an active NATIVE drawing document. All lengths are
     METERS (angles radians), 6 decimals. Returns {view_count, dimension_count, views:[…]}, and the

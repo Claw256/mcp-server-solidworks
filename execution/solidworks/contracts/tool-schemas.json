@@ -115,7 +115,7 @@
    "params": {
     "depth": "number (required for boss/cut — extrusion/cut depth in document units)",
     "feature_type": "string (optional, default 'boss': 'boss' | 'cut' | 'revolve' | 'sweep' | 'loft')",
-    "angle": "number (revolve only — revolution angle in DEGREES, default 360 = full revolve)",
+    "angle_deg": "number (revolve only — revolution angle in DEGREES, default 360 = full revolve)",
     "axis_x1": "number (revolve only — X of first endpoint of centerline segment)",
     "axis_y1": "number (revolve only — Y of first endpoint of centerline segment)",
     "axis_x2": "number (revolve only — X of second endpoint of centerline segment)",
@@ -152,7 +152,7 @@
     "cbore_diameter": "number (optional, meters — counterbore holes)",
     "cbore_depth": "number (optional, meters — counterbore holes)",
     "csink_diameter": "number (optional, meters — countersink holes)",
-    "csink_angle": "number (optional, DEGREES included angle — countersink holes; converted to radians C#-side)",
+    "csink_angle_deg": "number (optional, DEGREES included angle — countersink holes; converted to radians C#-side)",
     "thread_depth": "number (optional, meters — tapped holes)",
     "reverse": "boolean (optional, default false — RevDir of HoleWizard5)"
    }
@@ -188,7 +188,7 @@
     "ez": "number (single-edge: Z coordinate of point on target edge)",
     "edges_json": "string (optional — JSON array of {ex,ey,ez} objects for multiple edges, overrides single ex/ey/ez if non-empty)",
     "chamfer_type": "string (chamfer only: 'distance_angle' (default) | 'distance_distance')",
-    "angle": "number (chamfer distance_angle only: chamfer angle in DEGREES, default 45)",
+    "angle_deg": "number (chamfer distance_angle only: chamfer angle in DEGREES, default 45)",
     "distance2": "number (chamfer distance_distance only: second-face setback D2 in meters, required > 0 there)",
     "chamfer_flip": "boolean (chamfer only: swap which face gets D1 vs D2 / flip direction, default false)"
    }
@@ -479,7 +479,7 @@
     "count2": "integer (linear only — accepted but NON-FUNCTIONAL: no second-direction entity is wired to FeatureLinearPattern3 (recorded gap, 2026-07-16); compose a grid as a pattern OF a pattern instead. Default 1)",
     "spacing2": "number (linear only — see count2: non-functional until D2 is wired, default 0.01)",
     "axis_name": "string (circular only — reference axis name, e.g. 'Axis1')",
-    "angle": "number (circular only — degrees; with equal_spacing=true this is the TOTAL spread (use 360 for a full ring), with equal_spacing=false it is the angle BETWEEN adjacent instances)",
+    "angle_deg": "number (circular only — degrees; with equal_spacing=true this is the TOTAL spread (use 360 for a full ring), with equal_spacing=false it is the angle BETWEEN adjacent instances)",
     "equal_spacing": "boolean (circular only, default true — true: angle=total spread, evenly divided; false: angle=per-instance spacing, may wrap/overlap)",
     "features_json": "string (mirror only — JSON array of feature tree names to mirror, e.g. '[\"Edge-Flange1\",\"Sketched Bend2\"]'; ADR-022 JSON-string idiom)",
     "plane": "string (mirror only — mirror plane name; canonical English default-plane names resolve on any localization; default 'Right Plane')",
@@ -514,7 +514,7 @@
     "ey": "number (edge_flange — Y coordinate of point on target edge)",
     "ez": "number (edge_flange — Z coordinate of point on target edge)",
     "flange_length": "number (edge_flange — flange length in meters, default 0.02)",
-    "angle": "number (edge_flange/sketched_bend — bend angle in degrees, default 90.0)",
+    "angle_deg": "number (edge_flange/sketched_bend — bend angle in degrees, default 90.0)",
     "use_default_radius": "boolean (sketched_bend only, default false — true uses the sheet's default bend radius)",
     "flip": "boolean (sketched_bend only, default false — reverse the bend direction)",
     "bend_position": "string (sketched_bend only — 'centerline' (default), 'material_inside', 'material_outside', or 'bend_outside'; matches the `position` analyze_model(features) reports on an SM3dBend)",

@@ -394,7 +394,7 @@ def test_chamfer_distance_angle_lowering():
     assert cham[1]["feature_type"] == "chamfer" and cham[1]["chamfer_type"] == "distance_angle"
     assert cham[1]["radius_or_distance"] == 0.01
     assert cham[1]["edge_indices"] == "[0]"
-    assert abs(cham[1]["angle"] - 45.0) < 1e-3   # 0.785398 rad -> ~45°
+    assert abs(cham[1]["angle_deg"] - 45.0) < 1e-3   # 0.785398 rad -> ~45°
     assert "distance2" not in cham[1] and "chamfer_flip" not in cham[1]  # dist-angle omits both
 
 
@@ -418,7 +418,7 @@ def test_chamfer_distance_distance_lowering_and_flip():
     assert cham["radius_or_distance"] == 0.003 and cham["distance2"] == 0.005
     assert cham["chamfer_flip"] is True
     assert cham["edge_indices"] == "[1,3]"       # anchors -> edges 1 and 3, sorted
-    assert "angle" not in cham                    # angle is meaningless in this mode
+    assert "angle_deg" not in cham                    # angle is meaningless in this mode
 
 
 def test_chamfer_validation_rejections():
@@ -504,7 +504,7 @@ def test_revolve_lowering_axis_and_angle():
     rev = port.calls[-1]
     assert rev[0] == "extrude_feature"
     assert rev[1]["feature_type"] == "revolve"
-    assert abs(rev[1]["angle"] - 359.999971) < 1e-3  # 6.283185 rad; execution snaps to exact 360
+    assert abs(rev[1]["angle_deg"] - 359.999971) < 1e-3  # 6.283185 rad; execution snaps to exact 360
     assert (rev[1]["axis_x1"], rev[1]["axis_y1"], rev[1]["axis_x2"], rev[1]["axis_y2"]) == (0.0, 0.0254, 0.0, 0.0)
 
 
@@ -534,7 +534,7 @@ def test_circular_pattern_axis_and_seed_name_substitution():
     assert pat[1]["pattern_type"] == "circular"
     assert pat[1]["axis_name"] == "Düzlem1"            # runtime name from the axis op's response
     assert pat[1]["feature_name"].startswith("Ekstrüzyon")  # the CUT node's recorded runtime name
-    assert pat[1]["count"] == 4 and pat[1]["angle"] == 360.0 and pat[1]["equal_spacing"] is True
+    assert pat[1]["count"] == 4 and pat[1]["angle_deg"] == 360.0 and pat[1]["equal_spacing"] is True
 
 
 def test_sketch_frame_transform_mirror():
@@ -740,7 +740,7 @@ def test_sheet_metal_base_and_sketched_bend_lowering():
     assert "reverse_thickness" not in base                # default direction not emitted
     bend = port.calls[-1]
     assert bend[0] == "sheet_metal_feature" and bend[1]["feature_type"] == "sketched_bend"
-    assert abs(bend[1]["angle"] - 90.0) < 1e-3            # rad -> deg
+    assert abs(bend[1]["angle_deg"] - 90.0) < 1e-3            # rad -> deg
     assert bend[1]["use_default_radius"] is True          # radius omitted in the node
     assert "bend_radius" not in bend[1]
     assert "bend_position" not in bend[1]                 # centerline default not emitted
@@ -770,7 +770,7 @@ def test_sketched_bend_explicit_radius_and_position():
     assert "bend_radius" not in base and "k_factor" not in base   # omitted -> tool defaults
     assert base["reverse_thickness"] is True                      # explicit direction emitted
     bend = port.calls[-1][1]
-    assert abs(bend["angle"] - 90.0) < 1e-3               # angle omitted -> 90° default
+    assert abs(bend["angle_deg"] - 90.0) < 1e-3               # angle omitted -> 90° default
     assert bend["bend_radius"] == 0.01 and "use_default_radius" not in bend
     assert bend["bend_position"] == "material_inside"
     assert "flip" not in bend
@@ -892,7 +892,7 @@ def test_edge_flange_custom_profile_lowering_and_frame():
     gen = port.calls[1][1]
     assert gen["feature_type"] == "edge_flange_sketch"
     assert gen["edge_index"] == 170 and "ex" not in gen
-    assert abs(gen["angle"] - 90.0) < 1e-4  # radians -> tool-boundary degrees (C4)
+    assert abs(gen["angle_deg"] - 90.0) < 1e-4  # radians -> tool-boundary degrees (C4)
     line = port.calls[2][1]
     assert line["entity_type"] == "line" and (line["y1"], line["y2"]) == (0.0, 0.0)
     assert (line["x1"], line["x2"]) == (0.041779, 0.251779)  # u unchanged
@@ -1368,7 +1368,7 @@ def test_edge_flange_length_mode_single_call():
                             "analyze_model", "sheet_metal_feature"]
     ef = port.calls[-1][1]
     assert ef["feature_type"] == "edge_flange" and ef["edge_index"] == 170
-    assert ef["flange_length"] == 0.02 and abs(ef["angle"] - 90.0) < 1e-4
+    assert ef["flange_length"] == 0.02 and abs(ef["angle_deg"] - 90.0) < 1e-4
     assert "ex" not in ef
 
 

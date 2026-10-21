@@ -67,7 +67,7 @@ def open_document(file_path: str, as_assembly: bool = False) -> str:
         convert to STEP or defer that file.
       - as_assembly=True (foreign files only): the file is an ASSEMBLY STEP — the classic import
         would flatten it to a MULTIBODY PART; this asks for a real assembly import instead.
-    Makes the opened document active and bumps state_version."""
+    Makes the opened document active."""
     params = {"file_path": file_path}
     if as_assembly:
         params["as_assembly"] = True
@@ -118,6 +118,6 @@ def save_document(file_path: str = "") -> str:
 def activate_document(title: str) -> str:
     """Switch the ACTIVE SolidWorks document to an already-open one by its title (e.g. 'gear' or
     'gear.SLDPRT'). Use this to read/compare another open part — e.g. activate the original, analyze_model
-    it, then activate your copy — without OS window switching. Does NOT change geometry or state_version.
+    it, then activate your copy — without OS window switching. Does NOT change geometry.
     The document must already be OPEN. Returns the now-active document title."""
     return _call("activate_document", {"title": title})

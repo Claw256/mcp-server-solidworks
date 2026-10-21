@@ -106,7 +106,7 @@ namespace SolidworksExecution.Services
                     double ay2 = p?.Value<double?>("axis_y2") ?? 0.001;
                     // angle arrives in DEGREES (model-facing convention, like create_pattern circular /
                     // sheet_metal); convert to radians for FeatureRevolve2. Default 360 = full revolve.
-                    double angleDeg = p?.Value<double?>("angle") ?? 360.0;
+                    double angleDeg = p?.Value<double?>("angle_deg") ?? 360.0;
                     double angle = angleDeg * Math.PI / 180.0;
                     // Snap anything within ~0.06° of a full turn to an exact 2π so "full revolve" is clean
                     // (guards float rounding). Partial revolves (e.g. 180°) are unaffected.
@@ -631,7 +631,7 @@ namespace SolidworksExecution.Services
                     }
                     else // distance_angle (default; angle in DEGREES at the tool boundary, default 45)
                     {
-                        double angleDeg = p?.Value<double?>("angle") ?? 45.0;
+                        double angleDeg = p?.Value<double?>("angle_deg") ?? 45.0;
                         double chamferAngle = angleDeg * Math.PI / 180.0;
                         feature = modelDoc.FeatureManager.InsertFeatureChamfer(
                             chamferOpts,
@@ -1031,7 +1031,7 @@ namespace SolidworksExecution.Services
                 {
                     string axisName = p?.Value<string>("axis_name");
                     int count = p?.Value<int?>("count") ?? 4;
-                    double angleDeg = p?.Value<double?>("angle") ?? 90.0;
+                    double angleDeg = p?.Value<double?>("angle_deg") ?? 90.0;
                     double angleRad = angleDeg * Math.PI / 180.0;
                     // equal_spacing=true (default): angle = TOTAL angle spread across all instances (pass
                     // 360 for a full ring). equal_spacing=false: angle = the angle BETWEEN adjacent

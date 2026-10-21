@@ -12,7 +12,7 @@ from solidpilot.app import mcp
 @mcp.tool(structured_output=False)
 def rebuild_from_ir(artifact_path: str, fresh_document: bool = True) -> str:
     """Rebuild a part from its analysis artifact's Feature Graph IR — the verification half of
-    the round-trip ("the LLM proposes, the round-trip decides", IR-ADR-006). Reads
+    the round-trip ("the LLM proposes, the round-trip decides"). Reads
     `<...>.analysis.json`, takes `ir.graph`, and executes it through the SAME deterministic
     pycompiler as the forward door submit_feature_graph (two doors, ONE compiler — never forked).
 
@@ -165,8 +165,7 @@ def submit_feature_graph(graph: str, fresh_document: bool = True) -> str:
 
     Returns the compiler's per-node report: COMPLETED n/n, or FAILED with a feature-level error
     and how far it got. CAD ops are NOT transactional — on failure partial geometry remains
-    (reported, never hidden). The adapter resyncs state_version after every run, so subsequent
-    normal tools keep working. Verify the result objectively (analyze_model / compare_parts) —
+    (reported, never hidden). Verify the result objectively (analyze_model / compare_parts) —
     never assume."""
     try:
         graph_obj = json.loads(graph)

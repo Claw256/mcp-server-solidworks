@@ -198,7 +198,7 @@ def _face_desc(f: dict) -> str:
 @mcp.tool(structured_output=False)
 def compare_assemblies(doc_a: str, doc_b: str) -> str:
     """Objectively diff two ASSEMBLY documents against the RATIFIED verified criteria
-    (ADR-047): component set EXACT (source file + config + instance counts) AND every
+    component set EXACT (source file + config + instance counts) AND every
     component transform within tolerance (position <= 1µm, rotation <= 1e-6) AND mate
     count + types match AND mass properties within the V1 thresholds (|dV| <= 1%, |dA| <= 1%).
 

@@ -13,7 +13,7 @@ def extrude_feature(
     depth: Annotated[float, Field(
         ge=0, description="Extrusion depth in METERS (required > 0 for boss/cut)")] = 0.0,
     feature_type: Literal["boss", "cut", "revolve", "sweep", "loft"] = "boss",
-    angle: Annotated[float, Field(
+    angle_deg: Annotated[float, Field(
         gt=0, le=360, description="Revolve angle in DEGREES")] = 360.0,
     axis_x1: float = 0.0,
     axis_y1: float = 0.0,
@@ -30,7 +30,7 @@ def extrude_feature(
     """Extrude/feature the active sketch profile.
     feature_type='boss' (default): solid extrusion, requires depth.
     feature_type='cut': material removal, requires depth and existing solid body.
-    feature_type='revolve': solid of revolution — angle in DEGREES (default 360 = full revolve); axis defined by axis_x1/y1 to axis_x2/y2 (midpoint of that segment selects the centerline). revolve_cut=True makes it a revolve CUT (removes material; default False = boss).
+    feature_type='revolve': solid of revolution — angle_deg in DEGREES (default 360 = full revolve); axis defined by axis_x1/y1 to axis_x2/y2 (midpoint of that segment selects the centerline). revolve_cut=True makes it a revolve CUT (removes material; default False = boss).
     feature_type='sweep': sweeps profile along a path — requires path_sketch (name of the path sketch).
     feature_type='loft': lofts through multiple profiles — requires profiles (JSON array of sketch names, e.g. '[\"Sketch1\",\"Sketch2\"]').
     END CONDITION (boss/cut) — pick ONE; depth is required only for BLIND or mid_plane:
@@ -53,7 +53,7 @@ def extrude_feature(
         {
             "depth": depth,
             "feature_type": feature_type,
-            "angle": angle,
+            "angle_deg": angle_deg,
             "axis_x1": axis_x1, "axis_y1": axis_y1,
             "axis_x2": axis_x2, "axis_y2": axis_y2,
             "path_sketch": path_sketch,
@@ -124,7 +124,7 @@ def hole_wizard(
     cbore_diameter: float = -1.0,
     cbore_depth: float = -1.0,
     csink_diameter: float = -1.0,
-    csink_angle: float = -1.0,
+    csink_angle_deg: float = -1.0,
     thread_depth: float = -1.0,
     reverse: bool = False,
 ) -> str:
@@ -141,7 +141,7 @@ def hole_wizard(
         (coarse 'M6' -> 'M6x1.0'; or give 'M6x1'); for non-tap holes a pitch is stripped.
     end_condition: blind (needs depth) | through_all.
     depth/diameter in METERS (diameter 0 = the standard's size); cbore_diameter/cbore_depth METERS;
-    csink_diameter METERS and csink_angle DEGREES (included angle); thread_depth METERS (tap only).
+    csink_diameter METERS and csink_angle_deg DEGREES (included angle); thread_depth METERS (tap only).
     Call it AFTER the body exists (it is not part of the IR; IR hole.thread is recorded-only).
     On COMPLETED the result carries the created feature name and result_geometry."""
     params: dict = {
@@ -154,7 +154,7 @@ def hole_wizard(
     if face_x is not None and face_y is not None and face_z is not None:
         params.update({"face_x": face_x, "face_y": face_y, "face_z": face_z})
     for k, v in (("cbore_diameter", cbore_diameter), ("cbore_depth", cbore_depth),
-                 ("csink_diameter", csink_diameter), ("csink_angle", csink_angle),
+                 ("csink_diameter", csink_diameter), ("csink_angle_deg", csink_angle_deg),
                  ("thread_depth", thread_depth)):
         if v >= 0:
             params[k] = v
@@ -174,15 +174,15 @@ def add_edge_feature(
     ez: float = 0.0,
     edges_json: str = "[]",
     chamfer_type: Literal["distance_angle", "distance_distance"] = "distance_angle",
-    angle: Annotated[float, Field(gt=0, lt=90, description="Chamfer angle in DEGREES (distance_angle mode only; default 45)")] = 45.0,
+    angle_deg: Annotated[float, Field(gt=0, lt=90, description="Chamfer angle in DEGREES (distance_angle mode only; default 45)")] = 45.0,
     distance2: Annotated[float, Field(ge=0, description="Chamfer SECOND-face setback (D2) in METERS (distance_distance mode only; must be > 0 there)")] = 0.0,
     chamfer_flip: bool = False,
 ) -> str:
     """Apply a 3D edge modifier to solid body edges (post-extrusion). Distinct from sketch fillet/chamfer.
     feature_type='fillet': rounds selected edge(s) with given radius_or_distance.
     feature_type='chamfer': cuts a chamfer on selected edge(s). Two modes via chamfer_type:
-      - 'distance_angle' (default): radius_or_distance = setback (D1), angle = the chamfer angle in DEGREES
-        (default 45 → the classic equal 45° chamfer). angle is ignored in the other mode.
+      - 'distance_angle' (default): radius_or_distance = setback (D1), angle_deg = the chamfer angle in DEGREES
+        (default 45 → the classic equal 45° chamfer). angle_deg is ignored in the other mode.
       - 'distance_distance': radius_or_distance = first-face setback (D1), distance2 = second-face setback
         (D2, METERS, required > 0). A distance-distance chamfer is DIRECTIONAL — if D1/D2 land on the wrong
         faces (the chamfer leans the wrong way), set chamfer_flip=True to swap the sides (FlipDirection).
@@ -202,7 +202,7 @@ def add_edge_feature(
         params["edge_indices"] = edge_indices
     if feature_type == "chamfer":
         params["chamfer_type"] = chamfer_type
-        params["angle"] = angle
+        params["angle_deg"] = angle_deg
         params["distance2"] = distance2
         params["chamfer_flip"] = chamfer_flip
     return _call("add_edge_feature", params)
@@ -262,7 +262,7 @@ def create_pattern(
         gt=0, description="Second-direction spacing in METERS")] = 0.01,
     flip: bool = False,
     axis_name: str = "",
-    angle: Annotated[float, Field(
+    angle_deg: Annotated[float, Field(
         gt=0, le=360, description="Circular pattern angle in DEGREES")] = 90.0,
     equal_spacing: bool = True,
     features_json: str = "[]",
@@ -277,13 +277,13 @@ def create_pattern(
         two-direction grids do NOT work in one call; compose a grid as a pattern OF a pattern instead.
     pattern_type='circular': repeats feature_name around axis_name (reference axis, e.g. 'Axis1') with count instances.
         Create the axis first with add_reference_geometry(type='axis', ...).
-        equal_spacing=True (default): angle is the TOTAL spread (use 360 for a full ring); count instances are
+        equal_spacing=True (default): angle_deg is the TOTAL spread (use 360 for a full ring); count instances are
             evenly divided across it and NEVER overlap (count distinct == count).
-        equal_spacing=False: angle is the spacing BETWEEN adjacent instances. count*angle can exceed 360, in which
+        equal_spacing=False: angle_deg is the spacing BETWEEN adjacent instances. count*angle_deg can exceed 360, in which
             case later instances WRAP and overlap earlier ones, so the number of DISTINCT instances < count.
         Round-trip: analyze_model reports a CirPattern's instances, equal_spacing, spacing_deg plus
         the EFFECTIVE distinct_instances and a `wraps` flag. Either replay the stored form verbatim,
-        or — when it wraps — use the equivalent full ring (count=distinct_instances, angle=360,
+        or — when it wraps — use the equivalent full ring (count=distinct_instances, angle_deg=360,
         equal_spacing=True). Both give the same geometry.
     pattern_type='mirror': mirrors one or more FEATURES about a plane. features_json = a JSON array of
         feature tree names, e.g. '["Edge-Flange1","Sketched Bend2"]' (feature_name works for a single
@@ -307,7 +307,7 @@ def create_pattern(
             "spacing2": spacing2,
             "flip": flip,
             "axis_name": axis_name,
-            "angle": angle,
+            "angle_deg": angle_deg,
             "equal_spacing": equal_spacing,
             "features_json": features_json,
             "plane": plane,
@@ -349,8 +349,8 @@ def sheet_metal_feature(
     ey: float = 0.0,
     ez: float = 0.0,
     flange_length: Annotated[float, Field(
-        gt=0, description="Edge flange length in METERS; use >= 2*thickness+1mm (KNOWN-LIMITATIONS #11)")] = 0.02,
-    angle: Annotated[float, Field(
+        gt=0, description="Edge flange length in METERS; use >= 2*thickness+1mm")] = 0.02,
+    angle_deg: Annotated[float, Field(
         gt=0, le=180, description="Bend angle in DEGREES (edge_flange and sketched_bend; default 90)")] = 90.0,
     use_default_radius: bool = False,
     flip: bool = False,
@@ -375,7 +375,7 @@ def sheet_metal_feature(
         against, so a wrong side fails downstream and less clearly.
     'edge_flange' — a DEFAULT-profile (full-edge-width) flange on an existing sheet metal edge.
         Select by edge_index (from analyze_model(edges), PREFERRED — a coordinate pick can miss a
-        real edge) or a point ex/ey/ez on it. flange_length · angle (90).
+        real edge) or a point ex/ey/ez on it. flange_length · angle_deg (90).
     'edge_flange_sketch' + 'edge_flange_finish' — the CUSTOM-profile flange, in two calls. The
         sketch call takes the attach edge (edge_index preferred, else ex/ey/ez), generates the
         edge-linked profile sketch (the API accepts ONLY a sketch it generated), clears it
@@ -386,7 +386,7 @@ def sheet_metal_feature(
     'sketched_bend' — bends the sheet about the bend LINE(S) in the ACTIVE sketch (draw them on a
         sheet face with create_sketch + add_sketch_entity first; the sketch must still be active).
         The side that stays PUT is the fixed face: fixed_face_index (from analyze_model(faces),
-        PREFERRED) or fixed_x/y/z, a 3D point ON that face. angle (90) · bend_radius, or
+        PREFERRED) or fixed_x/y/z, a 3D point ON that face. angle_deg (90) · bend_radius, or
         use_default_radius=True to take the sheet's default and ignore it · flip reverses the fold
         direction · bend_position 'centerline' (default) | 'material_inside' | 'material_outside' |
         'bend_outside', matching the `position` analyze_model(features) reports on an SM3dBend, so a
@@ -404,7 +404,7 @@ def sheet_metal_feature(
         "k_factor": k_factor,
         "ex": ex, "ey": ey, "ez": ez,
         "flange_length": flange_length,
-        "angle": angle,
+        "angle_deg": angle_deg,
         "use_default_radius": use_default_radius,
         "flip": flip,
         "bend_position": bend_position,
@@ -434,8 +434,8 @@ def modify_dimension(
     value: the new value in SI units — METERS for a length/distance, RADIANS for an angle
           (e.g. 0.036 = 36mm; 0.5236 = 30°). NOT mm/degrees.
     Workflow: analyze_model(analysis_type='features') → read a feature's dimension name + value (SI) →
-          modify_dimension(name, new_value) → analyze again to confirm. Bumps state_version (geometry
-          changes, unlike analyze). On COMPLETED the result carries result_geometry
+          modify_dimension(name, new_value) → analyze again to confirm. (Changes geometry,
+          unlike analyze.) On COMPLETED the result carries result_geometry
           {dimension, requested, effective}: the value read back from SolidWorks AFTER rebuild — verify
           it matches your intent (an equation/relation may have driven it elsewhere). This is how you
           build variants (e.g. resize a boss, widen a slot, change a gear's tooth-spacing)."""
@@ -459,7 +459,7 @@ def edit_feature(
     action='delete':     permanently removes the feature (works for ANY feature type, incl. sketches and reference geometry).
     action='rename':     renames the feature; requires new_name.
     new_name: required only for action='rename' (ignored otherwise).
-    Bumps state_version. WARNING: suppress and delete CHANGE the model topology, so any coordinate /
+    WARNING: suppress and delete CHANGE the model topology, so any coordinate /
     edge / face selection captured earlier may no longer resolve — re-run analyze_model
     (analysis_type='edges' or 'features') after a structural edit before selecting geometry again."""
     return _call(

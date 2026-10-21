@@ -40,7 +40,7 @@ def export_image(view: str = "isometric", width: int = 1280, height: int = 960, 
     """Picture of the ACTIVE document (the built part) returned as an image, to compare with the source drawing.
 
     view: isometric | front | back | left | right | top | bottom | current — or a comma list for up to 4
-        ("isometric,front,top"). Changes the VIEW orientation only; the model and state_version are untouched.
+        ("isometric,front,top"). Changes the VIEW orientation only; the model is untouched.
     width/height: requested size. The image returned to YOU is reduced automatically so it always fits the
         model's image limits (and the relay size cap); a SAVED file (see below) keeps the full requested size,
         clamped only to 64..4096 px.

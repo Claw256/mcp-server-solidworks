@@ -234,13 +234,13 @@ def analyze_drawing(file_path: str, save_analysis: bool = True,
 
     mode='ir'    — the lowered Feature Graph IR, without building. For inspection or saving.
     mode='build' — lower and BUILD, through the same deterministic pycompiler as
-                   submit_feature_graph. **CHANGES GEOMETRY and bumps state_version.** Opens a new
+                   submit_feature_graph. **CHANGES GEOMETRY.** Opens a new
                    part. Re-derives from the same file, so it needs no cached graph — but verify
                    the sha256 in the summary is the file you looked at.
 
     ⮕ Before interpreting a single number below, call `get_recipe(section='reverse')` — the TOOL,
       not the `recipe://usage/reverse` resource, which most hosts give the model no way to read
-      (ADR-077). It holds the reading discipline (projection standard, face binding, contour gaps,
+     . It holds the reading discipline (projection standard, face binding, contour gaps,
       sheet-metal bend arithmetic) and the self-verification rules. When you then need the IR
       vocabulary, `get_recipe('feature_graph_schema', profile='part')` is the right shape for this
       job — it drops the assembly vocabulary and keeps every part and sheet-metal feature type.

@@ -199,7 +199,7 @@ def get_recipe(
     section='analysis_artifact_schema': the persistent analysis-artifact contract JSON
         (identity/hash, recipe, parameters, ir block + the formal 'verified' definition).
     The same rules are also published as `recipe://usage/*` MCP resources; use whichever your
-    host actually lets you reach. Read-only; does NOT touch SolidWorks or state_version."""
+    host actually lets you reach. Read-only; does NOT touch SolidWorks."""
     if section == "feature_graph_schema":
         return _feature_graph_schema_text(profile)
     if section == "analysis_artifact_schema":

@@ -257,7 +257,7 @@ def lower_revolve(node):
     axis = node["axis"]
     angle_rad = float(node.get("angle") or (2.0 * math.pi))
     params = {"feature_type": "revolve",
-              "angle": round(math.degrees(angle_rad), 6),
+              "angle_deg": round(math.degrees(angle_rad), 6),
               "axis_x1": float(axis["x1"]), "axis_y1": float(axis["y1"]),
               "axis_x2": float(axis["x2"]), "axis_y2": float(axis["y2"])}
     cut = node.get("operation") == "cut"
@@ -285,7 +285,7 @@ def lower_circular_pattern(node):
             "feature_name": node_feature(node["feature"]),
             "axis_name": FROM_PREV_FEATURE,
             "count": int(node["count"]),
-            "angle": float(node["angle_deg"]),
+            "angle_deg": float(node["angle_deg"]),
             "equal_spacing": node.get("equal_spacing", True) is not False},
            "circular pattern %dx @ %g deg (seed = node %s)"
            % (int(node["count"]), float(node["angle_deg"]), node["feature"])),
@@ -336,7 +336,7 @@ def lower_sketched_bend(node):
     angle_rad = float(node.get("angle") or (math.pi / 2.0))
     near = node["fixed"]["near"]
     params = {"feature_type": "sketched_bend",
-              "angle": round(math.degrees(angle_rad), 6),
+              "angle_deg": round(math.degrees(angle_rad), 6),
               "fixed_x": float(near[0]), "fixed_y": float(near[1]), "fixed_z": float(near[2])}
     if node.get("radius") is not None:
         params["bend_radius"] = float(node["radius"])
@@ -379,11 +379,11 @@ def lower_edge_flange(node, edge_index):
     if node.get("length") is not None:
         return [Op("sheet_metal_feature",
                    {"feature_type": "edge_flange", "edge_index": int(edge_index),
-                    "flange_length": float(node["length"]), "angle": angle_deg},
+                    "flange_length": float(node["length"]), "angle_deg": angle_deg},
                    "edge flange (simple): length %g on edge #%d"
                    % (float(node["length"]), int(edge_index)))]
     gen = {"feature_type": "edge_flange_sketch", "edge_index": int(edge_index),
-           "angle": angle_deg}
+           "angle_deg": angle_deg}
     if node.get("flip") is True:
         gen["flip"] = True
     ops = [Op("sheet_metal_feature", gen,
@@ -391,7 +391,7 @@ def lower_edge_flange(node, edge_index):
     for prim in node.get("profile", []):
         ops.append(_profile_op(prim))
     fin = {"feature_type": "edge_flange_finish", "edge_index": int(edge_index),
-           "angle": angle_deg}
+           "angle_deg": angle_deg}
     if node.get("radius") is not None:
         fin["bend_radius"] = float(node["radius"])
     else:
@@ -499,7 +499,7 @@ def _csink_revolve_ops(node, at, n, plane_name, plane_normal):
     ops.append(Op("add_sketch_entity", {"entity_type": "line", "x1": -e, "y1": 0.0, "x2": h, "y2": 0.0},
                   "hole: countersink revolve axis"))
     ops.append(Op("extrude_feature",
-                  {"feature_type": "revolve", "angle": 360.0, "revolve_cut": True, AXIS_IN_FRAME: True,
+                  {"feature_type": "revolve", "angle_deg": 360.0, "revolve_cut": True, AXIS_IN_FRAME: True,
                    "axis_x1": -e, "axis_y1": 0.0, "axis_x2": h, "axis_y2": 0.0},
                   "hole: %g-degree countersink revolve cut" % round(math.degrees(2.0 * half), 4)))
     return ops
@@ -604,6 +604,6 @@ def lower_chamfer(node, edge_indices):
         note = "chamfer %g×%g on edges %s" % (float(node["distance"]), float(node["distance2"]), idx)
     else:
         angle_rad = float(node.get("angle") or (math.pi / 4.0))
-        params["angle"] = round(math.degrees(angle_rad), 6)
+        params["angle_deg"] = round(math.degrees(angle_rad), 6)
         note = "chamfer d=%g @ %.6g rad on edges %s" % (float(node["distance"]), angle_rad, idx)
     return [Op("add_edge_feature", params, note)]

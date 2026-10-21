@@ -194,7 +194,7 @@ def get_selection() -> str:
       • an EDGE → {type:'edge', i, start, end, mid}              → add_edge_feature(edge_indices='[i]')
       • a VERTEX → {type:'vertex', point:[x,y,z]};  a reference PLANE → {type:'plane', name}
     Returns {selected_count, selection:[...]}. i = -1 if a selected face/edge couldn't be matched to a
-    solid-body index. Read-only: does NOT change state_version and does NOT clear the selection — but call it
+    solid-body index. Read-only: does NOT clear the selection — but call it
     BEFORE any tool that clears the selection (create_sketch, add_edge_feature, extrude cut, etc.), otherwise
     the user's pick is gone. If selected_count is 0, ask the user to click the face/edge they mean."""
     return _call("get_selection", {})

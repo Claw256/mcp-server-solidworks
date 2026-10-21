@@ -76,7 +76,7 @@ def add_flat_pattern_view(
     flip_view: flip the flat pattern view (default False).
 
     The part must be sheet metal (have a Flat-Pattern feature) and saved to disk, else returns
-    FLAT_PATTERN_VIEW_FAILED. Bumps state_version; result_geometry echoes {view_name, config}."""
+    FLAT_PATTERN_VIEW_FAILED. result_geometry echoes {view_name, config}."""
     return _call(
         "add_flat_pattern_view",
         {"pos_x": pos_x, "pos_y": pos_y, "scale": scale, "model_path": model_path,
@@ -129,7 +129,7 @@ def auto_dimension_drawing(
     eliminate_duplicates: avoid inserting the same model dimension into more than one view. Default True.
 
     Returns COMPLETED with result_geometry.inserted_count (the number of dimensions placed; 0 is a valid
-    outcome). Requires an active drawing with at least one model view. Bumps state_version."""
+    outcome). Requires an active drawing with at least one model view."""
     return _call(
         "auto_dimension_drawing",
         {"all_views": all_views, "include_unmarked": include_unmarked,
@@ -155,7 +155,7 @@ def auto_center_marks(
     extended_lines: draw the extended centerlines through each hole rather than a small cross. Default True.
 
     Returns COMPLETED with result_geometry.center_marks (total marks placed across all views; 0 if the
-    part has no holes/slots). Bumps state_version. Requires an active drawing with model views."""
+    part has no holes/slots). Requires an active drawing with model views."""
     return _call(
         "auto_center_marks",
         {"include_slots": include_slots, "extended_lines": extended_lines},
@@ -169,10 +169,10 @@ def auto_center_marks(
 def add_hole_callout(px: float, py: float) -> str:
     """Insert a hole callout (e.g. '4× Ø8 THRU') on the hole edge nearest the sheet point (px, py)
     in the active drawing. Coordinate-based selection — same fragile point pick as add_drawing_dimension
-    (KNOWN-LIMITATIONS #6), so place px/py right on the hole's projected circular edge. For centerlines
+   , so place px/py right on the hole's projected circular edge. For centerlines
     prefer auto_center_marks (robust/automatic); use this for explicit per-hole callouts where wanted.
     px/py: a point on the target hole's projected circle, in drawing sheet coordinates (meters).
-    Requires an active drawing document. Bumps state_version."""
+    Requires an active drawing document."""
     return _call("add_hole_callout", {"px": px, "py": py})
 
 
@@ -203,14 +203,14 @@ def add_section_view(
       a view — point at it.
     - LINE mode (x1,y1 → x2,y2): draw the cut line, for cutting THROUGH a feature's interior where
       no edge exists. It must fully cross the view through the feature.
-    All coordinates are drawing sheet coordinates in meters (KNOWN-LIMITATIONS #6 — coordinate-based).
+    All coordinates are drawing sheet coordinates in meters (coordinate-based).
 
     px,py: where to place the section view (meters) — also picks which side the section projects toward.
     label: section label (default 'A' → 'SECTION A-A'). flip: reverse the cut/viewing direction.
     scale: optional section view scale; inherits the parent view's scale if 0/omitted.
 
     After the section lands, call auto_dimension_drawing or add_drawing_dimension to dimension the
-    now-visible depth. Bumps state_version. Requires an active drawing with a parent model view. If it
+    now-visible depth. Requires an active drawing with a parent model view. If it
     returns SECTION_VIEW_FAILED, the drawing state may be wedged by prior failed attempts — a fresh
     server/drawing state clears it."""
     params: dict = {"px": px, "py": py, "label": label, "flip": flip}

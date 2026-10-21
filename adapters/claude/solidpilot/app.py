@@ -2,6 +2,8 @@
 from mcp.server import MCPServer
 from mcp.server.caching import CacheHint
 
+from solidpilot.surface import INSTRUCTIONS
+
 # NOTE: pycompiler is reached via `from ir_execution_port import run_feature_graph` imported
 # LAZILY inside rebuild_from_ir and submit_feature_graph — a missing compiler tree degrades to a
 # clean tool error instead of killing the whole MCP server at startup.
@@ -38,6 +40,7 @@ from mcp.server.caching import CacheHint
 _RECIPE_CACHE = CacheHint(ttl_ms=3_600_000, scope="public")  # 1 h
 mcp = MCPServer(
     "solidworks-execution-adapter",
+    instructions=INSTRUCTIONS,
     cache_hints={
         "resources/read": _RECIPE_CACHE,
         "resources/list": _RECIPE_CACHE,
