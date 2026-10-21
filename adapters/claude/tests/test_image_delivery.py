@@ -306,7 +306,7 @@ def test_export_image_file_is_full_size_png_sibling_inline_stays_tier_limited():
     calls = []
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
         target = os.path.join(d, "shot.bmp")
-        with _patched(server, _call_raw=_fake_renderer(calls)):
+        with _patched(server.bridge, _call_raw=_fake_renderer(calls)):
             res = server.export_image(view="isometric", width=req_w, height=req_h, file_path=target)
         png_path = os.path.join(d, "shot.png")
         assert os.path.exists(target) and os.path.exists(png_path)
@@ -335,7 +335,7 @@ def test_export_image_hires_without_file_path_writes_to_staging():
     calls = []
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d, \
             _patched(os, environ={**os.environ, "AGENT_STAGING_DIR": d}), \
-            _patched(server, _call_raw=_fake_renderer(calls)):
+            _patched(server.bridge, _call_raw=_fake_renderer(calls)):
         res = server.export_image(view="front", width=2800, height=2100, hires=True)
         pngs = [f for f in os.listdir(d) if f.endswith(".png")]
         bmps = [f for f in os.listdir(d) if f.endswith(".bmp")]
@@ -350,7 +350,7 @@ def test_export_image_default_call_unchanged_no_files_left():
         return
     _agent, server, _ToolError, Image = t
     calls = []
-    with _patched(server, _call_raw=_fake_renderer(calls)):
+    with _patched(server.bridge, _call_raw=_fake_renderer(calls)):
         res = server.export_image(view="isometric,front", width=800, height=600)
     assert len(res) == 3 and all(isinstance(r, Image) for r in res[1:])
     assert len(calls) == 2 and not any(os.path.exists(c[1]["file_path"]) for c in calls)
@@ -365,7 +365,7 @@ def test_export_image_steps_down_until_it_fits_and_reports_size():
     calls = []
     # budget ~200 kB per image; a 400x300 noise render is ~360 kB, so it needs a few 10% steps
     with _patched(dp, RELAY_MAX_BYTES=64 * 1024 + 266_668), \
-            _patched(server, _call_raw=_fake_renderer(calls, "noise")):
+            _patched(server.bridge, _call_raw=_fake_renderer(calls, "noise")):
         res = server.export_image(view="isometric", width=400, height=300)
     img = [r for r in res if isinstance(r, Image)][0]
     w, h = struct.unpack_from(">II", img.data, 16)
@@ -382,7 +382,7 @@ def test_export_image_impossible_budget_fails_clearly():
         return
     _agent, server, _ToolError, Image = t
     calls = []
-    with _patched(dp, RELAY_MAX_BYTES=64 * 1024 + 400), _patched(server, _call_raw=_fake_renderer(calls, "noise")):
+    with _patched(dp, RELAY_MAX_BYTES=64 * 1024 + 400), _patched(server.bridge, _call_raw=_fake_renderer(calls, "noise")):
         res = server.export_image(view="isometric", width=400, height=300)
     assert len(res) == 1 and "RESULT_TOO_LARGE" in res[0], res
     assert len(calls) <= 12

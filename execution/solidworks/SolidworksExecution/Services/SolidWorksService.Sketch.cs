@@ -14,6 +14,7 @@ namespace SolidworksExecution.Services
     public partial class SolidWorksService
     {
 
+        [Tool("create_sketch")]
         public ExecutionResponse CreateSketch(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -400,6 +401,7 @@ namespace SolidworksExecution.Services
         // in the sketch — the caller decides whether to continue, fix, or discard). state_version bumps
         // only on COMPLETED. The echo is a compact per-type count, NOT per-segment result_geometry —
         // read the sketch back with analyze_model(sketch) when exact readback is needed.
+        [Tool("add_sketch_entities")]
         public ExecutionResponse AddSketchEntities(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -514,6 +516,7 @@ namespace SolidworksExecution.Services
             }
         }
 
+        [Tool("add_sketch_entity")]
         public ExecutionResponse AddSketchEntity(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -636,6 +639,7 @@ namespace SolidworksExecution.Services
             }
         }
 
+        [Tool("add_dimension")]
         public ExecutionResponse AddDimension(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -754,6 +758,7 @@ namespace SolidworksExecution.Services
             }
         }
 
+        [Tool("add_sketch_constraint")]
         public ExecutionResponse AddSketchConstraint(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -871,6 +876,7 @@ namespace SolidworksExecution.Services
         // -----------------------------------------------------------------------
         // M18 — edit_sketch
         // -----------------------------------------------------------------------
+        [Tool("edit_sketch")]
         public ExecutionResponse EditSketch(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))

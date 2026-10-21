@@ -14,6 +14,7 @@ namespace SolidworksExecution.Services
     public partial class SolidWorksService
     {
 
+        [Tool("extrude_feature", Diagnose = true)]
         public ExecutionResponse ExtrudeFeature(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -105,7 +106,7 @@ namespace SolidworksExecution.Services
                     double ay2 = p?.Value<double?>("axis_y2") ?? 0.001;
                     // angle arrives in DEGREES (model-facing convention, like create_pattern circular /
                     // sheet_metal); convert to radians for FeatureRevolve2. Default 360 = full revolve.
-                    double angleDeg = p?.Value<double?>("angle") ?? 360.0;
+                    double angleDeg = p?.Value<double?>("angle_deg") ?? 360.0;
                     double angle = angleDeg * Math.PI / 180.0;
                     // Snap anything within ~0.06° of a full turn to an exact 2π so "full revolve" is clean
                     // (guards float rounding). Partial revolves (e.g. 180°) are unaffected.
@@ -349,6 +350,7 @@ namespace SolidworksExecution.Services
             }
         }
 
+        [Tool("create_rib", Diagnose = true)]
         public ExecutionResponse CreateRib(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -462,6 +464,7 @@ namespace SolidworksExecution.Services
             }
         }
 
+        [Tool("add_edge_feature", Diagnose = true)]
         public ExecutionResponse AddEdgeFeature(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -628,7 +631,7 @@ namespace SolidworksExecution.Services
                     }
                     else // distance_angle (default; angle in DEGREES at the tool boundary, default 45)
                     {
-                        double angleDeg = p?.Value<double?>("angle") ?? 45.0;
+                        double angleDeg = p?.Value<double?>("angle_deg") ?? 45.0;
                         double chamferAngle = angleDeg * Math.PI / 180.0;
                         feature = modelDoc.FeatureManager.InsertFeatureChamfer(
                             chamferOpts,
@@ -680,6 +683,7 @@ namespace SolidworksExecution.Services
         // -----------------------------------------------------------------------
         // M19 — add_reference_geometry
         // -----------------------------------------------------------------------
+        [Tool("add_reference_geometry")]
         public ExecutionResponse AddReferenceGeometry(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -854,6 +858,7 @@ namespace SolidworksExecution.Services
         // -----------------------------------------------------------------------
         // M20 — create_pattern
         // -----------------------------------------------------------------------
+        [Tool("create_pattern", Diagnose = true)]
         public ExecutionResponse CreatePattern(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -1026,7 +1031,7 @@ namespace SolidworksExecution.Services
                 {
                     string axisName = p?.Value<string>("axis_name");
                     int count = p?.Value<int?>("count") ?? 4;
-                    double angleDeg = p?.Value<double?>("angle") ?? 90.0;
+                    double angleDeg = p?.Value<double?>("angle_deg") ?? 90.0;
                     double angleRad = angleDeg * Math.PI / 180.0;
                     // equal_spacing=true (default): angle = TOTAL angle spread across all instances (pass
                     // 360 for a full ring). equal_spacing=false: angle = the angle BETWEEN adjacent
@@ -1105,6 +1110,7 @@ namespace SolidworksExecution.Services
         // -----------------------------------------------------------------------
         // M21 — set_part_material
         // -----------------------------------------------------------------------
+        [Tool("set_part_material")]
         public ExecutionResponse SetPartMaterial(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -1195,6 +1201,7 @@ namespace SolidworksExecution.Services
         // changes — unlike analyze). Flow: analyze_model(features) reports every feature's dimension
         // full-names + SI values → pick a name → modify_dimension(name, value).
         // -----------------------------------------------------------------------
+        [Tool("modify_dimension", Diagnose = true)]
         public ExecutionResponse ModifyDimension(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -1299,6 +1306,7 @@ namespace SolidworksExecution.Services
         // bumps state_version. RESOLVER PROBE (P1.3): suppress/delete CHANGE topology, so selectors or
         // coordinates captured earlier may no longer resolve — re-query with analyze_model afterwards.
         // -----------------------------------------------------------------------
+        [Tool("edit_feature", Diagnose = true)]
         public ExecutionResponse EditFeature(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))

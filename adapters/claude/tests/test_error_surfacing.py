@@ -48,8 +48,8 @@ def test_the_model_sees_the_reason_through_the_real_tool_path():
     if server is None:
         print("     (skipped: adapter deps not installed)")
         return
-    real = server.call_tool
-    server.call_tool = lambda *a, **k: FAILED
+    real = server.bridge.call_tool
+    server.bridge.call_tool = lambda *a, **k: FAILED
     try:
         try:
             asyncio.run(server.mcp.call_tool("verify_state", {}))
@@ -58,7 +58,7 @@ def test_the_model_sees_the_reason_through_the_real_tool_path():
         else:
             raise AssertionError("a FAILED response must surface as an error")
     finally:
-        server.call_tool = real
+        server.bridge.call_tool = real
     assert "NO_ACTIVE_DOCUMENT" in msg, msg
 
 
@@ -69,9 +69,9 @@ def test_execution_layer_outage_is_explained_not_masked():
         return
 
     def down(*a, **k):
-        raise server.ExecutionLayerError("solidworks-execution is not running and its exe was not found")
-    real = server.call_tool
-    server.call_tool = down
+        raise server.bridge.ExecutionLayerError("solidworks-execution is not running and its exe was not found")
+    real = server.bridge.call_tool
+    server.bridge.call_tool = down
     try:
         try:
             asyncio.run(server.mcp.call_tool("verify_state", {}))
@@ -80,7 +80,7 @@ def test_execution_layer_outage_is_explained_not_masked():
         else:
             raise AssertionError("an outage must surface as an error")
     finally:
-        server.call_tool = real
+        server.bridge.call_tool = real
     assert "Execution layer unavailable" in msg and "exe was not found" in msg, msg
 
 

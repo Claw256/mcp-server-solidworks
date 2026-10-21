@@ -32,11 +32,14 @@ _MM = 1000.0                    # the `draw` dialect is TRUE mm; the IR is meter
 _SCHEMA_VERSION = "0.7.1-draft"
 
 
-def _fail(reason, detail):
+def _fail(reason, detail, **extra):
     """Guard: a gate reason must exist in the published vocabulary, or the schema is lying about
-    what the model can be told."""
+    what the model can be told. `extra` carries structured evidence for questions.py (e.g. the
+    competing thickness values) and never changes the reason."""
     assert reason in GATE_REASONS, "gate reason %r is not in vocab.GATE_REASONS" % reason
-    return {"direct": False, "reason": reason, "detail": detail}
+    out = {"direct": False, "reason": reason, "detail": detail}
+    out.update(extra)
+    return out
 
 
 # --------------------------------------------------------------------------- geometry helpers
@@ -176,7 +179,7 @@ def assess(art, cfg):
     # --- G4: thickness. Exactly one source, or the model decides.
     th = _resolve_thickness(art, fv, views, cfg)
     if th["state"] != "ok":
-        return _fail(th["state"], th["detail"])
+        return _fail(th["state"], th["detail"], candidates=th.get("candidates", []))
 
     # --- G5: a fixed point that every bend can fold around, on flat material, clear of everything.
     poly = _loop_polygon(fv, outer)
@@ -244,6 +247,11 @@ def _resolve_thickness(art, flat_view, views, cfg):
       (b) a bare `N mm` note (s-2).
     Both samples are covered, one each -- and s-2's 30 x 60 bent-state view is correctly NOT
     mistaken for a thickness view because its long side matches nothing on the blank."""
+    # A user-supplied value (questions.apply_answers) settles it: the person who owns the design
+    # decided, so no source has to be guessed or may compete.
+    override = (art.get("overrides") or {}).get("thickness_mm")
+    if override:
+        return {"state": "ok", "value": float(override), "source": "user answer"}
     eps = cfg["tolerance"].get("chain_eps_mm", 0.01)
     found = []
     flat_sides = flat_view["size"]
@@ -266,7 +274,8 @@ def _resolve_thickness(art, flat_view, views, cfg):
                 "detail": "no thickness view and no `N mm` note"}
     if len({round(f[0], 4) for f in found}) > 1:
         return {"state": "thickness_ambiguous",
-                "detail": "competing thickness sources: " + "; ".join("%g from %s" % f for f in found)}
+                "detail": "competing thickness sources: " + "; ".join("%g from %s" % f for f in found),
+                "candidates": sorted({round(f[0], 4) for f in found})}
     return {"state": "ok", "value": found[0][0], "source": found[0][1]}
 
 

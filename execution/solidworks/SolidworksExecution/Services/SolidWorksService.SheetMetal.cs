@@ -17,6 +17,7 @@ namespace SolidworksExecution.Services
         // -----------------------------------------------------------------------
         // M22 — sheet_metal_feature
         // -----------------------------------------------------------------------
+        [Tool("sheet_metal_feature", Diagnose = true)]
         public ExecutionResponse SheetMetalFeature(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -120,7 +121,7 @@ namespace SolidworksExecution.Services
                     // OffsetType/OffsetDistance is the Flange LENGTH group (OffsetDistance = flange_length);
                     // PositionType=1 = swFlangePositionTypeMaterialInside.
                     double flangeLength = p?.Value<double?>("flange_length") ?? 0.02;
-                    double angleDeg = p?.Value<double?>("angle") ?? 90.0;
+                    double angleDeg = p?.Value<double?>("angle_deg") ?? 90.0;
                     double angleRad = angleDeg * Math.PI / 180.0;
 
                     // Edge selection shares SelectFlangeEdge with the sketch/finish phases
@@ -198,7 +199,7 @@ namespace SolidworksExecution.Services
                     double? esx = p?.Value<double?>("ex");
                     double? esy = p?.Value<double?>("ey");
                     double? esz = p?.Value<double?>("ez");
-                    double esAngleDeg = p?.Value<double?>("angle") ?? 90.0;
+                    double esAngleDeg = p?.Value<double?>("angle_deg") ?? 90.0;
                     bool esFlip = p?.Value<bool?>("flip") ?? false;
                     bool esClear = p?.Value<bool?>("clear_profile") ?? true;
                     var esEdge = SelectFlangeEdge(modelDoc, p, esx, esy, esz, out string esEdgeErr);
@@ -277,7 +278,7 @@ namespace SolidworksExecution.Services
                     double? efx = p?.Value<double?>("ex");
                     double? efy = p?.Value<double?>("ey");
                     double? efz = p?.Value<double?>("ez");
-                    double efAngleDeg = p?.Value<double?>("angle") ?? 90.0;
+                    double efAngleDeg = p?.Value<double?>("angle_deg") ?? 90.0;
                     bool efUseDefaultRadius = p?.Value<bool?>("use_default_radius") ?? false;
                     double efRadius = p?.Value<double?>("bend_radius") ?? 0.001;
                     string efPosStr = (p?.Value<string>("bend_position") ?? "material_inside").ToLowerInvariant();
@@ -326,7 +327,7 @@ namespace SolidworksExecution.Services
                     // read from the local sldworksapi.chm (ADR-035 discipline); NOTE this encoding
                     // DIFFERS from ISketchedBendFeatureData.PositionType (swFlangePositionTypes_e,
                     // where 4=centerline) — the reader maps both to the same canonical string.
-                    double sbAngleDeg = p?.Value<double?>("angle") ?? 90.0;
+                    double sbAngleDeg = p?.Value<double?>("angle_deg") ?? 90.0;
                     double sbAngleRad = sbAngleDeg * Math.PI / 180.0;
                     bool useDefaultRadius = p?.Value<bool?>("use_default_radius") ?? false;
                     double sbRadius = p?.Value<double?>("bend_radius") ?? 0.001;

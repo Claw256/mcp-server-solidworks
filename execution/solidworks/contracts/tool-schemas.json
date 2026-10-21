@@ -115,7 +115,7 @@
    "params": {
     "depth": "number (required for boss/cut — extrusion/cut depth in document units)",
     "feature_type": "string (optional, default 'boss': 'boss' | 'cut' | 'revolve' | 'sweep' | 'loft')",
-    "angle": "number (revolve only — revolution angle in DEGREES, default 360 = full revolve)",
+    "angle_deg": "number (revolve only — revolution angle in DEGREES, default 360 = full revolve)",
     "axis_x1": "number (revolve only — X of first endpoint of centerline segment)",
     "axis_y1": "number (revolve only — Y of first endpoint of centerline segment)",
     "axis_x2": "number (revolve only — X of second endpoint of centerline segment)",
@@ -152,7 +152,7 @@
     "cbore_diameter": "number (optional, meters — counterbore holes)",
     "cbore_depth": "number (optional, meters — counterbore holes)",
     "csink_diameter": "number (optional, meters — countersink holes)",
-    "csink_angle": "number (optional, DEGREES included angle — countersink holes; converted to radians C#-side)",
+    "csink_angle_deg": "number (optional, DEGREES included angle — countersink holes; converted to radians C#-side)",
     "thread_depth": "number (optional, meters — tapped holes)",
     "reverse": "boolean (optional, default false — RevDir of HoleWizard5)"
    }
@@ -188,7 +188,7 @@
     "ez": "number (single-edge: Z coordinate of point on target edge)",
     "edges_json": "string (optional — JSON array of {ex,ey,ez} objects for multiple edges, overrides single ex/ey/ez if non-empty)",
     "chamfer_type": "string (chamfer only: 'distance_angle' (default) | 'distance_distance')",
-    "angle": "number (chamfer distance_angle only: chamfer angle in DEGREES, default 45)",
+    "angle_deg": "number (chamfer distance_angle only: chamfer angle in DEGREES, default 45)",
     "distance2": "number (chamfer distance_distance only: second-face setback D2 in meters, required > 0 there)",
     "chamfer_flip": "boolean (chamfer only: swap which face gets D1 vs D2 / flip direction, default false)"
    }
@@ -404,7 +404,10 @@
     "pen_mm": "number (optional, PDF only, default 0 = every pen) - keep only primitives stroked with this width (mm) as part geometry; sheet.pdf.pens lists the pens and pen_suggested_mm the arc-richest one",
     "scale": "string (optional, PDF only - drawing scale like '1:2' (paper:true); overrides the title-block text; default '' = read it from the page, else ASSUME 1:1 and say so)",
     "layout": "string (optional, default '' = every DXF layout merged; a layout NAME reads that sheet alone - sheet.layouts lists the names and entity counts)",
-    "mode": "string enum (optional, default 'auto') - 'auto': the gate picks DIRECT_BUILDABLE (a short plain-text summary of an already-lowered flat pattern) or 'NOT_DIRECT | <reason>' followed by the WHOLE analysis; 'ir': the lowered Feature Graph IR without building; 'build': lower AND build through pycompiler (opens a new part, bumps state_version). ONE FORMAT since 2026-09-07: the first-turn SUMMARY and the per-view PULL (`view='v0'`) were retired together with 'full' because, once the wire form landed, the complete artifact measured SMALLER on all 10 samples than a summary plus the pulls it forced (f-3: 14.0 KB against 28.7)."
+    "answers": "string (optional, JSON object {question_id: value}) - answers to the OPEN QUESTIONS the previous analyze_drawing returned, e.g. {\"bend_1\":\"l:5\",\"thickness\":\"2.0\"}; applied to a copy of the artifact, which is then re-gated",
+    "accept_defaults": "boolean (optional, default false) - build despite open BLOCKING questions by taking each default (an unmatched bend note is left unbuilt as a declared gap); mode=ir|build otherwise returns NEEDS_INPUT and builds nothing",
+    "mode": "string enum (optional, default 'auto') - 'auto': the gate picks DIRECT_BUILDABLE (a short plain-text summary of an already-lowered flat pattern) or 'NOT_DIRECT | <reason>' followed by the WHOLE analysis; 'ir': the lowered Feature Graph IR without building; 'build': lower AND build through pycompiler (opens a new part, bumps state_version). ONE FORMAT since 2026-09-07: the first-turn SUMMARY and the per-view PULL (`view='v0'`) were retired together with 'full' because, once the wire form landed, the complete artifact measured SMALLER on all 10 samples than a summary plus the pulls it forced (f-3: 14.0 KB against 28.7).",
+    "background": "boolean (optional, default false) - start the build as a background job and return a job_id at once (poll job_status); for builds that may outlast a chat call. One job at a time; other CAD calls are refused while it runs (only with mode='build')"
    }
   },
   "output": "string: mode='auto' -> either a DIRECT_BUILDABLE plain-text summary or 'NOT_DIRECT | <reason>' + the whole analysis JSON {analysis_version, source, config, sheet (incl. not_read), frame, views[] (each with geometry{lines as {class: [[index,x1,y1,x2,y2],...]}, arcs, circles, ellipses?}, loops[], open_chains[] (multi-segment), open_singles[]?), alignment[], view_graph?, dimensions[], bend_notes[], notes[], frame_notes[], user_description}; mode='ir' -> a Feature Graph IR JSON; mode='build' -> the compile/build result. JSON is serialized without whitespace padding (separators ',' ':')."
@@ -477,7 +480,7 @@
     "count2": "integer (linear only — accepted but NON-FUNCTIONAL: no second-direction entity is wired to FeatureLinearPattern3 (recorded gap, 2026-07-16); compose a grid as a pattern OF a pattern instead. Default 1)",
     "spacing2": "number (linear only — see count2: non-functional until D2 is wired, default 0.01)",
     "axis_name": "string (circular only — reference axis name, e.g. 'Axis1')",
-    "angle": "number (circular only — degrees; with equal_spacing=true this is the TOTAL spread (use 360 for a full ring), with equal_spacing=false it is the angle BETWEEN adjacent instances)",
+    "angle_deg": "number (circular only — degrees; with equal_spacing=true this is the TOTAL spread (use 360 for a full ring), with equal_spacing=false it is the angle BETWEEN adjacent instances)",
     "equal_spacing": "boolean (circular only, default true — true: angle=total spread, evenly divided; false: angle=per-instance spacing, may wrap/overlap)",
     "features_json": "string (mirror only — JSON array of feature tree names to mirror, e.g. '[\"Edge-Flange1\",\"Sketched Bend2\"]'; ADR-022 JSON-string idiom)",
     "plane": "string (mirror only — mirror plane name; canonical English default-plane names resolve on any localization; default 'Right Plane')",
@@ -512,7 +515,7 @@
     "ey": "number (edge_flange — Y coordinate of point on target edge)",
     "ez": "number (edge_flange — Z coordinate of point on target edge)",
     "flange_length": "number (edge_flange — flange length in meters, default 0.02)",
-    "angle": "number (edge_flange/sketched_bend — bend angle in degrees, default 90.0)",
+    "angle_deg": "number (edge_flange/sketched_bend — bend angle in degrees, default 90.0)",
     "use_default_radius": "boolean (sketched_bend only, default false — true uses the sheet's default bend radius)",
     "flip": "boolean (sketched_bend only, default false — reverse the bend direction)",
     "bend_position": "string (sketched_bend only — 'centerline' (default), 'material_inside', 'material_outside', or 'bend_outside'; matches the `position` analyze_model(features) reports on an SM3dBend)",
@@ -594,7 +597,8 @@
    "state_version": "n/a at this level — the adapter resyncs its local state_version from GET /state after the run",
    "params": {
     "artifact_path": "string (required — absolute path of the <file>.analysis.json artifact whose ir.graph to rebuild)",
-    "fresh_document": "boolean (optional, default true — open a NEW blank part before the rebuild; the normal round-trip flow)"
+    "fresh_document": "boolean (optional, default true — open a NEW blank part before the rebuild; the normal round-trip flow)",
+    "background": "boolean (optional, default false) - start the build as a background job and return a job_id at once (poll job_status); for builds that may outlast a chat call. One job at a time; other CAD calls are refused while it runs"
    }
   },
   "output": "The compiler's per-node summary string: COMPLETED n/n nodes (+ artifact name, + source_stale flag when the source file changed since analysis) or FAILED with the feature-level error and how far it got (partial geometry may remain — CAD ops are not transactional)."
@@ -606,7 +610,8 @@
    "state_version": "n/a at this level — the adapter resyncs its local state_version from GET /state after the run",
    "params": {
     "graph": "string (required — JSON Feature Graph IR per cad-planner/contracts/feature-graph.schema.json; lengths in METERS, angles in RADIANS)",
-    "fresh_document": "boolean (optional, default true — open a new blank document first: part graphs a part, assembly graphs an assembly; false = build into the current active document)"
+    "fresh_document": "boolean (optional, default true — open a new blank document first: part graphs a part, assembly graphs an assembly; false = build into the current active document)",
+    "background": "boolean (optional, default false) - start the build as a background job and return a job_id at once (poll job_status); for builds that may outlast a chat call. One job at a time; other CAD calls are refused while it runs"
    }
   },
   "output": "Per-node report string: COMPLETED (nodes built) or FAILED (feature-level error + how far it got). Partial geometry may remain on failure (CAD ops are not transactional). Not itself in the state_version/idempotency envelope; its sub-ops are."
@@ -630,7 +635,7 @@
    "operation_id": "n/a at this level — each underlying read carries its own operation_id (uuid4) on /api/tool/execute",
    "state_version": "n/a at this level — the underlying calls thread the adapter's tracked state_version",
    "params": {
-    "expected": "string (required — JSON object in MILLIMETRES, all keys optional: bbox_mm [x,y,z], bbox_ordered, volume_mm3, volume_tol_pct, cg_mm [x,y,z], cg_tol_mm, holes [{diameter_mm, count}], tol_mm)"
+    "expected": "string (optional, default '' = check against what the last analyze_drawing build implies: volume and round-hole sizes/counts derived from the artifact; keys you pass override those. Otherwise a JSON object in MILLIMETRES, all keys optional: bbox_mm [x,y,z], bbox_ordered, volume_mm3, volume_tol_pct, cg_mm [x,y,z], cg_tol_mm, holes [{diameter_mm, count}], bolt_circles [{center_mm, axis, radius_mm, diameter_mm, count}] (design intent: holes of one size on one circle), symmetric [\"X\",\"Z\"] (design intent: bbox centred on the origin), tol_mm)"
    }
   },
   "output": "Multi-line report: verifier verdict PASS/FAIL, one [PASS|FAIL|WARN] row per compared item with expected/built/delta, and [NOT CHECKED] rows for anything that could not be measured."
@@ -762,5 +767,65 @@
    }
   },
   "output": "-> see execution-response.json - Features = [file name, 'body_name=<source body name>' when available]"
+ },
+ "ask_user": {
+  "description": "[ADAPTER-ONLY — no COM, no REST, no state_version] Puts the OPEN QUESTIONS from the last analyze_drawing (a bend note that matches two lines, a missing or conflicting thickness, assumed values) to the user. With a client that supports MCP elicitation the user gets a form per question; otherwise it returns the questions for the model to ask in chat. Returns ANSWERS | {json}, NEEDS_CHAT | ... or DECLINED | ...; the answers go back to analyze_drawing(answers=...).",
+  "input": {
+   "operation_id": "n/a - adapter-only",
+   "state_version": "n/a - adapter-only",
+   "params": {
+    "question_ids": "string (optional, default '' = every open question) - comma-separated question ids from the OPEN QUESTIONS block"
+   }
+  },
+  "output": "string: ANSWERS | {\"<id>\": \"<value>\"} when the user answered; NEEDS_CHAT | <rendered questions> when the client cannot show forms; DECLINED | ... when the user declined; NO_OPEN_QUESTIONS | ... when nothing is pending"
+ },
+ "replay_run": {
+  "description": "[ADAPTER-ONLY \u2014 no COM, no REST, no state_version] Re-runs a recorded Feature Graph build exactly (same graph, same compiler) as a new run. Every graph build prints run_id=... and leaves a manifest (graph, sha256, environment, per-node log, ordered operation ids) under the runs directory; the stored graph hash is verified before replay. run_id='' lists recent runs.",
+  "input": {
+   "operation_id": "n/a - adapter-only",
+   "state_version": "n/a - adapter-only",
+   "params": {
+    "run_id": "string (optional, default '' = list the most recent runs) - the id printed as run_id=... by a build",
+    "fresh_document": "boolean (optional, default true) - open a new blank document first, as the original build did",
+    "background": "boolean (optional, default false) - start the build as a background job and return a job_id at once (poll job_status); for builds that may outlast a chat call. One job at a time; other CAD calls are refused while it runs"
+   }
+  },
+  "output": "string: the compiler per-node summary of the replay + run_id (new) + replayed_from, or a list of recent runs, or FAILED | RUN_NOT_FOUND | ..."
+ },
+ "job_status": {
+  "description": "[ADAPTER-ONLY \u2014 no COM, no REST, no state_version] Checks (or cancels) a background build started with background=True. Waits up to wait_s (max 25) for it to finish, then answers RUNNING with progress (operations executed, last tool) or COMPLETED/FAILED/CANCELLED followed by the build's own result. cancel=True stops it before its next operation; geometry built so far remains. While a job runs every other CAD call is refused so nothing lands in the middle of the build.",
+  "input": {
+   "operation_id": "n/a - adapter-only",
+   "state_version": "n/a - adapter-only",
+   "params": {
+    "job_id": "string (optional, default '' = the most recent job) - the id from JOB_STARTED",
+    "wait_s": "number (optional, default 20, max 25) - how long to wait for completion before answering RUNNING",
+    "cancel": "boolean (optional, default false) - request cancellation before the job's next operation"
+   }
+  },
+  "output": "string: RUNNING | job_id=... | kind | elapsed | ops | last_tool ; or COMPLETED|FAILED|CANCELLED | job_id=... followed by the build result ; or FAILED | JOB_NOT_FOUND | ..."
+ },
+ "checkpoint": {
+  "description": "[ADAPTER-ONLY \u2014 no COM, no REST, no state_version] Saves, lists or reopens a named copy of the document being built, to try an alternative without losing the current state (CAD ops are not transactional). save: a copy of the active document (SaveAs3 Copy; the original keeps its name, path and tree). restore: opens the copy as another document and activates it. list: the saved checkpoints. Saving over an existing name is refused.",
+  "input": {
+   "operation_id": "n/a - adapter-only",
+   "state_version": "n/a - adapter-only",
+   "params": {
+    "action": "string enum (optional, default 'list') - save | restore | list",
+    "name": "string (required for save/restore) - letters, digits, '_' or '-', max 40"
+   }
+  },
+  "output": "string: SAVED | ..., RESTORED | ..., a CHECKPOINTS list, or FAILED | <code> | ..."
+ },
+ "save_copy": {
+  "description": "[ADAPTER-ONLY \u2014 no COM, no REST, no state_version] Saves a COPY of the active document to file_path (IModelDocExtension.SaveAs3 with swSaveAsOptions_Silent|Copy) and keeps editing the original: unlike save_document(file_path), which is a real SaveAs, the active document's name, path and feature tree are untouched. Creates the folder if needed.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state)",
+   "params": {
+    "file_path": "string (required - full path of the copy including the .sldprt/.sldasm/.slddrw extension)"
+   }
+  },
+  "output": "-> see execution-response.json - Features = [the copy's path]; FAILED SAVE_FAILED / MISSING_PARAMETER / NO_ACTIVE_DOCUMENT"
  }
 }

@@ -55,6 +55,8 @@ examples/*-rebuild/
 *.dwg2dxf.dxf
 *.slddrw2dxf.dxf
 *.analysis-v*.json
+# Image-export scratch written next to the adapter during manual runs
+adapters/claude/*.bmp
 .solidpilot/
 
 # Remote gateway: secrets and runtime state
@@ -63,5 +65,7 @@ gateway/.env.*
 !gateway/.env.example
 gateway/.vercel/
 adapters/claude/.env
+adapters/claude/.env.*
+!adapters/claude/.env.agent.example
 adapters/claude/.agent-secrets*
 .pytest_cache/

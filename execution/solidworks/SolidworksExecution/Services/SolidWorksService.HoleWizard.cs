@@ -135,6 +135,7 @@ namespace SolidworksExecution.Services
         // ray against the target face (ray starts 2 mm above the face along its normal, runs into it); the
         // hit face + point defines the hole centre. face_index / face_x/y/z is used only to read the face
         // normal (the face must be planar) so the ray direction is known.
+        [Tool("hole_wizard", Diagnose = true)]
         public ExecutionResponse HoleWizard(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -286,8 +287,8 @@ namespace SolidworksExecution.Services
                 double cbDia = p?.Value<double?>("cbore_diameter") ?? -1;
                 double cbDepth = p?.Value<double?>("cbore_depth") ?? -1;
                 double csDia = p?.Value<double?>("csink_diameter") ?? -1;
-                // csink_angle arrives in DEGREES (model-facing convention); HoleWizard5 takes radians.
-                double? csAngDeg = p?.Value<double?>("csink_angle");
+                // csink_angle_deg arrives in DEGREES (model-facing convention); HoleWizard5 takes radians.
+                double? csAngDeg = p?.Value<double?>("csink_angle_deg");
                 double csAng = csAngDeg != null ? csAngDeg.Value * Math.PI / 180.0 : -1;
                 double length = 0.0;
                 switch (genericType)

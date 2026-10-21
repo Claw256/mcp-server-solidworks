@@ -62,12 +62,12 @@ class _Fake:
 
 
 def _run(server, fake, path, **kw):
-    real = server._call_raw
-    server._call_raw = fake
+    real = server.bridge._call_raw
+    server.bridge._call_raw = fake
     try:
         return server.analyze_drawing(path, save_analysis=False, **kw)
     finally:
-        server._call_raw = real
+        server.bridge._call_raw = real
 
 
 def test_slddrw_and_dwg_go_through_open_export_close():

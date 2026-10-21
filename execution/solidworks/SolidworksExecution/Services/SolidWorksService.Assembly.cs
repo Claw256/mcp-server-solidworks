@@ -442,6 +442,7 @@ namespace SolidworksExecution.Services
         // 'mates' (creation order, enum types, values, entity anchors), 'faces'/'edges'
         // (component-scoped, index-first; requires 'component'). Read-only, no state bump.
         // mass_properties for the whole assembly: analyze_model(mass_properties) already works.
+        [Tool("analyze_assembly")]
         public ExecutionResponse AnalyzeAssembly(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -544,6 +545,7 @@ namespace SolidworksExecution.Services
         }
 
         // open_new_assembly — blank ASSEMBLY document (the twin of open_new_part).
+        [Tool("open_new_assembly")]
         public ExecutionResponse OpenNewAssembly(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -627,6 +629,7 @@ namespace SolidworksExecution.Services
         // then close the preloaded doc (the assembly holds its own reference). fixed=true fixes
         // the inserted instance; fixed=false explicitly unfixes (SolidWorks auto-fixes a first
         // component in some flows — we make the state deterministic either way, C7 spirit).
+        [Tool("insert_component", Diagnose = true)]
         public ExecutionResponse InsertComponent(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -796,6 +799,7 @@ namespace SolidworksExecution.Services
         // value: METERS for distance, DEGREES for angle (C4 — degrees at tool boundaries).
         // After the mate: rebuild + report BOTH sides' component transforms (the per-mate stop
         // check — compare against the original's readback before the next mate).
+        [Tool("add_mate", Diagnose = true)]
         public ExecutionResponse AddMateTool(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -926,6 +930,7 @@ namespace SolidworksExecution.Services
         // The missing-parts half of flattened-assembly reconstruction (ADR-048): a structured
         // assembly STEP with no per-part files flattens to a multibody import; each distinct
         // body becomes a referenced part file, instances get transforms via fingerprint match.
+        [Tool("save_body_as_part")]
         public ExecutionResponse SaveBodyAsPart(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))

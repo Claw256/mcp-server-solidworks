@@ -18,6 +18,7 @@ import random
 import re
 import sys
 import time
+import traceback
 from typing import Any
 
 import httpx
@@ -221,13 +222,13 @@ async def deliver_document(file_path: str = "", format: str = "", delivery_slot:
     temp_copy = ""
     try:
         if fmt:
-            state = sw_server._call_raw("verify_state", {})
+            state = await asyncio.to_thread(sw_server.bridge._call_raw, "verify_state", {})
             title = ((state.get("cadState") or {}).get("activeDocument") or "document")
             name = _safe_name(os.path.splitext(title)[0] or "document") + _EXPORT_EXT[fmt]
             os.makedirs(STAGING_DIR, exist_ok=True)
             _sweep_staging()
             temp_copy = path = os.path.join(STAGING_DIR, f"deliver-{delivery_slot[:8]}-{name}")
-            r = sw_server._call_raw("export_document", {"format": fmt, "file_path": path})
+            r = await asyncio.to_thread(sw_server.bridge._call_raw, "export_document", {"format": fmt, "file_path": path})
             if r.get("status") != "COMPLETED":
                 err = r.get("error") or {}
                 raise ToolError(f"EXPORT_FAILED: {err.get('code')}: {err.get('message')}")
@@ -238,7 +239,7 @@ async def deliver_document(file_path: str = "", format: str = "", delivery_slot:
                 raise ToolError(f"FORBIDDEN_PATH: only files under {STAGING_DIR} (or the owner's allowed folders) can be delivered")
             filename = os.path.basename(path)
         else:
-            r = sw_server._call_raw("save_document", {"file_path": ""})   # in place; the path comes from SolidWorks itself
+            r = await asyncio.to_thread(sw_server.bridge._call_raw, "save_document", {"file_path": ""})   # in place; the path comes from SolidWorks itself
             if r.get("status") != "COMPLETED":
                 err = r.get("error") or {}
                 raise ToolError(f"SAVE_FAILED: {err.get('code')}: {err.get('message')}")
@@ -292,7 +293,7 @@ async def _tools_call(params: dict[str, Any]) -> dict[str, Any]:
         except ToolError as exc:
             result = CallToolResult(content=[TextContent(type="text", text=str(exc))], is_error=True)
         except Exception as exc:   # mirror the SDK: never leak internals, but keep the stack in the log
-            log(f"tool {name} crashed: {exc!r}")
+            log(f"tool {name} crashed: {exc!r}\n{traceback.format_exc(limit=6)}")
             result = CallToolResult(content=[TextContent(type="text", text=str(exc))], is_error=True)
     if not isinstance(result, CallToolResult):
         raise ToolError(f"{name} needs interactive input, which the remote gateway cannot relay")
@@ -401,6 +402,9 @@ async def _respond(gw: Gateway, job: dict[str, Any]) -> None:
         except httpx.HTTPError as exc:
             log(f"result {job['id']} not delivered (attempt {attempt + 1}): {exc!r}")
         await asyncio.sleep(1 + attempt)
+    # Out of attempts: the CAD operation may well have completed, but the caller will time out. Say so
+    # in the log (it used to vanish silently) so a "timed out but actually built" report can be explained.
+    log(f"RESULT LOST for job {job['id']} ({job.get('method')}): gateway never accepted it after 3 attempts")
 
 
 async def poll_forever(gw: Gateway) -> None:

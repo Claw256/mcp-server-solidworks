@@ -130,7 +130,7 @@ def parse_rpc(resp):
 # ----------------------------------------------------------------------------------------------
 async def test_health_and_discovery(gateway):
     async with httpx.AsyncClient() as c:
-        assert (await c.get(f"{gateway.url}/health")).json() == {"ok": True, "agent_connected": False}
+        assert (await c.get(f"{gateway.url}/health")).json() == {"ok": True, "redis": True, "agent_connected": False}
         prm = await c.get(f"{gateway.url}/.well-known/oauth-protected-resource/mcp")
         assert prm.status_code == 200 and prm.json()["resource"] == f"{gateway.url}/mcp"
         assert prm.json()["authorization_servers"][0].rstrip("/") == gateway.url
@@ -295,3 +295,58 @@ async def test_foreign_resource_rejected_at_authorize(gateway):
         assert r.status_code in (302, 400)
         if r.status_code == 302:
             assert "error=invalid_target" in r.headers["location"]
+
+
+async def test_agent_token_lockout_is_per_address(gateway):
+    """A stranger guessing at /agent/token locks out THEIR address, never the real agent."""
+    url = f"{gateway.url}/agent/token"
+    form = {"grant_type": "client_credentials", "scope": "agent", "resource": f"{gateway.url}/agent"}
+    async with httpx.AsyncClient() as c:
+        bad = [(await c.post(url, data=form, auth=("pc-agent", "wrong"),
+                             headers={"X-Forwarded-For": "203.0.113.9"})).status_code for _ in range(7)]
+        assert bad[:5] == [401] * 5 and bad[-1] == 429
+        locked = await c.post(url, data=form, auth=(AGENT_ID, AGENT_SECRET), headers={"X-Forwarded-For": "203.0.113.9"})
+        assert locked.status_code == 429                                  # the attacker's address stays locked
+        real = await c.post(url, data=form, auth=(AGENT_ID, AGENT_SECRET), headers={"X-Forwarded-For": "198.51.100.7"})
+        assert real.status_code == 200 and "access_token" in real.json()  # the real agent is unaffected
+
+
+async def test_health_reports_a_redis_outage(gateway):
+    store = gateway.app.state.store
+    real = store.redis.ping
+
+    async def down():
+        raise ConnectionError("redis is gone")
+    store.redis.ping = down
+    try:
+        async with httpx.AsyncClient() as c:
+            r = await c.get(f"{gateway.url}/health")
+    finally:
+        store.redis.ping = real
+    assert r.status_code == 503 and r.json() == {"ok": False, "redis": False}
+
+
+def test_a_bad_numeric_setting_names_the_variable(monkeypatch):
+    import pytest
+    from solidpilot_gateway.config import Settings
+    for name, value in (("GATEWAY_PUBLIC_URL", "https://example.test"), ("GATEWAY_OWNER_SECRET", "s"),
+                        ("AGENT_CLIENT_ID", "a"), ("AGENT_CLIENT_SECRET", "b"),
+                        ("GATEWAY_REDIS_URL", "redis://localhost:6379")):
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("GATEWAY_CALL_TIMEOUT", "two hundred")
+    with pytest.raises(SystemExit) as ei:
+        Settings.from_env()
+    assert "GATEWAY_CALL_TIMEOUT" in str(ei.value) and "two hundred" in str(ei.value)
+
+
+async def test_guessing_spread_over_many_addresses_still_hits_a_global_cap(gateway):
+    """Per-address lockout alone would let a spoofed X-Forwarded-For brute-force forever: a high global cap backs it up."""
+    from solidpilot_gateway.provider import GLOBAL_AGENT_LOCK_AFTER
+    url = f"{gateway.url}/agent/token"
+    form = {"grant_type": "client_credentials", "scope": "agent", "resource": f"{gateway.url}/agent"}
+    async with httpx.AsyncClient() as c:
+        for i in range(GLOBAL_AGENT_LOCK_AFTER):
+            r = await c.post(url, data=form, auth=("pc-agent", "wrong"), headers={"X-Forwarded-For": f"10.0.{i // 250}.{i % 250}"})
+            assert r.status_code == 401, (i, r.status_code)       # every address is fresh: none is locked individually
+        real = await c.post(url, data=form, auth=(AGENT_ID, AGENT_SECRET), headers={"X-Forwarded-For": "198.51.100.77"})
+        assert real.status_code == 429                            # the flood tripped the global cap

@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Offline unit tests for the pure-C# infrastructure (guard, registry, pipeline). No COM, no
+       SolidWorks needed at run time; the interop assemblies are only needed to LOAD the service type. -->
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <SolidWorksApiDir Condition="'$(SolidWorksApiDir)' == ''">C:\Program Files\SOLIDWORKS Corp\SOLIDWORKS (2)\api\redist</SolidWorksApiDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.6.3" />
+    <PackageReference Include="xunit" Version="2.5.0" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.5.0" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="SolidworksExecution">
+      <HintPath>..\SolidworksExecution\bin\Debug\SolidworksExecution.exe</HintPath>
+    </Reference>
+    <Reference Include="SolidWorks.Interop.sldworks"><HintPath>$(SolidWorksApiDir)\SolidWorks.Interop.sldworks.dll</HintPath><EmbedInteropTypes>false</EmbedInteropTypes></Reference>
+    <Reference Include="SolidWorks.Interop.swconst"><HintPath>$(SolidWorksApiDir)\SolidWorks.Interop.swconst.dll</HintPath></Reference>
+  </ItemGroup>
+</Project>

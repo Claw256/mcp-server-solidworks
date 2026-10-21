@@ -33,6 +33,7 @@ namespace SolidworksExecution.Services
         // export_image — saves the ACTIVE document's graphics view as a .bmp (IModelDoc2.SaveBMP is the
         // documented path; SaveAs3 image formats are not). Changes the VIEW ORIENTATION only (never the
         // model), does not touch state_version. The adapter converts the BMP to PNG for the model.
+        [Tool("export_image")]
         public ExecutionResponse ExportImage(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))

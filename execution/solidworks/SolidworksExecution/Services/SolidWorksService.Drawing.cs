@@ -14,6 +14,7 @@ namespace SolidworksExecution.Services
     public partial class SolidWorksService
     {
 
+        [Tool("create_drawing")]
         public ExecutionResponse CreateDrawing(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -91,6 +92,7 @@ namespace SolidworksExecution.Services
             }
         }
 
+        [Tool("add_drawing_view")]
         public ExecutionResponse AddDrawingView(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -238,6 +240,7 @@ namespace SolidworksExecution.Services
             }
         }
 
+        [Tool("add_flat_pattern_view")]
         public ExecutionResponse AddFlatPatternView(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -370,6 +373,7 @@ namespace SolidworksExecution.Services
             }
         }
 
+        [Tool("add_drawing_dimension")]
         public ExecutionResponse AddDrawingDimension(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -485,6 +489,7 @@ namespace SolidworksExecution.Services
         // drawing's dims match the model?) and the Stage-2 re-modeling input. Packs one JSON string into
         // Features (the field the adapter's response_mapper surfaces). NOTE: GetFirstView() returns the SHEET
         // as the first view; it is reported too (type int distinguishes it) — interpret view[0] as the sheet.
+        [Tool("analyze_slddrw_test")]
         public ExecutionResponse AnalyzeDrawing(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -2257,6 +2262,7 @@ namespace SolidworksExecution.Services
         // (ADR-018). Bumps state_version (the drawing gains annotations); echoes inserted_count in
         // result_geometry for in-band verification (ADR-023 spirit) so the caller can confirm dims landed
         // without a separate analyze_drawing round-trip.
+        [Tool("auto_dimension_drawing")]
         public ExecutionResponse AutoDimensionDrawing(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -2357,6 +2363,7 @@ namespace SolidworksExecution.Services
         // operates per view with NO coordinate pick (the drawing-side analogue of index-based selection,
         // ADR-033/034). All swconst values are inlined int constants (ADR-018). Bumps state_version; echoes
         // the total center-mark count in result_geometry (in-band verify, ADR-023 spirit).
+        [Tool("auto_center_marks")]
         public ExecutionResponse AutoCenterMarks(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -2494,6 +2501,7 @@ namespace SolidworksExecution.Services
         // IDrawingDoc.AddHoleCallout2(X, Y, Z) — verified against the interop. Bumps state_version.
         // NOTE: coordinate selection is fragile for crowded geometry (KNOWN-LIMITATIONS #6); prefer
         // auto_center_marks for centerlines and use this for explicit hole callouts where wanted.
+        [Tool("add_hole_callout")]
         public ExecutionResponse AddHoleCallout(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -2590,6 +2598,7 @@ namespace SolidworksExecution.Services
         // interop; swconst (swCreateSectionView_ChangeDirection=4) inlined (ADR-018). Bumps state_version.
         // NOTE: edge selection is coordinate-based (#6) — point at a real projected edge; a clean drawing
         // state matters (repeated failed attempts can corrupt section creation — restart/rebuild if so).
+        [Tool("add_section_view")]
         public ExecutionResponse AddSectionView(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))

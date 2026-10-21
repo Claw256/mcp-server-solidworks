@@ -17,7 +17,7 @@ docstring pointer is not updated does not fail loudly — the model just silentl
 the rules. `find_resource_drift` closes exactly that hole: every URI mentioned anywhere in
 server.py must resolve, every declared section must be registered AND present in
 recipe-usage.md. Resources have no `tool-schemas.json` counterpart (that file's every top-level
-key is a tool), so the declared surface is `server._RECIPE_SECTIONS` itself.
+key is a tool), so the declared surface is `_recipes._RECIPE_SECTIONS` itself.
 
 Runnable two ways:
   - standalone:  python tests/test_schema_contract.py   (exits non-zero on drift)
@@ -39,6 +39,21 @@ _CONTRACT_PATH = os.path.join(
 # Import server.py as a module (it lives one dir up from tests/).
 sys.path.insert(0, _ADAPTER_DIR)
 import server  # noqa: E402
+from solidpilot.tools import recipes as _recipes  # noqa: E402
+from solidpilot.tools import drawing_in as _drawing_in  # noqa: E402
+
+
+def _adapter_source() -> str:
+    """server.py plus every solidpilot module: the tool surface now lives across them."""
+    parts = []
+    for root, _dirs, files in os.walk(os.path.join(_ADAPTER_DIR, "solidpilot")):
+        for name in sorted(files):
+            if name.endswith(".py"):
+                with open(os.path.join(root, name), encoding="utf-8") as fh:
+                    parts.append(fh.read())
+    with open(os.path.join(_ADAPTER_DIR, "server.py"), encoding="utf-8") as fh:
+        parts.append(fh.read())
+    return "\n".join(parts)
 
 
 def _adapter_tools():
@@ -65,7 +80,7 @@ def _contract_tools():
 def find_drift():
     """Return a list of human-readable drift messages (empty == in sync)."""
     adapter = _adapter_tools()
-    contract = _contract_tools()
+    contract = {k: v for k, v in _contract_tools().items() if k not in EXECUTION_ONLY_TOOLS}
     errors = []
 
     only_adapter = sorted(set(adapter) - set(contract))
@@ -91,10 +106,10 @@ def find_resource_drift():
     errors = []
     static = {str(r.uri) for r in asyncio.run(server.mcp.list_resources())}
     templates = [t.uri_template for t in asyncio.run(server.mcp.list_resource_templates())]
-    _header, sections = server._recipe_sections()
+    _header, sections = _recipes._recipe_sections()
 
     # 1. Every declared section is registered AND actually exists in recipe-usage.md.
-    for slug in server._RECIPE_SECTIONS:
+    for slug in _recipes._RECIPE_SECTIONS:
         if f"recipe://usage/{slug}" not in static:
             errors.append(f"section '{slug}' is in _RECIPE_SECTIONS but not registered as a resource")
         if slug not in sections:
@@ -103,15 +118,14 @@ def find_resource_drift():
 
     # 2. A section present in the file but not served — deliberate (the surface is
     #    user-controlled), so report it as INFO-level drift only if it is never mentioned.
-    unserved = sorted(set(sections) - set(server._RECIPE_SECTIONS))
+    unserved = sorted(set(sections) - set(_recipes._RECIPE_SECTIONS))
     if unserved:
         errors.append(f"recipe-usage.md has section(s) {unserved} that are NOT served — add them "
                       f"to _RECIPE_SECTIONS deliberately, or drop the header")
 
     # 3. THE IMPORTANT ONE: every recipe://|schema:// URI mentioned anywhere in server.py must
     #    resolve, or the docstring pointers silently stop finding the rules.
-    with open(os.path.join(_ADAPTER_DIR, "server.py"), encoding="utf-8") as fh:
-        source = fh.read()
+    source = _adapter_source()
     mentioned = set(re.findall(r"(?:recipe|schema)://[A-Za-z0-9_./{}-]+", source))
     prefixes = [t.split("{")[0] for t in templates if "{" in t]
     for uri in sorted(mentioned):
@@ -138,20 +152,71 @@ def find_drawing_api_drift():
     cost the user a reconnect. Cheap to check, so check it.
     """
     errors = []
-    with open(server.__file__, encoding="utf-8") as fh:
-        src = fh.read()
+    src = _adapter_source()
     used = set(re.findall(r"_draw\.([A-Za-z_][A-Za-z0-9_]*)", src))
-    if server._draw is None:
+    if _drawing_in._draw is None:
         return ["the drawing package did not import — cannot verify the _draw API surface"]
-    exported = set(getattr(server._draw, "__all__", []))
+    exported = set(getattr(_drawing_in._draw, "__all__", []))
     for name in sorted(used):
-        if not hasattr(server._draw, name):
+        if not hasattr(_drawing_in._draw, name):
             errors.append(f"server.py calls _draw.{name}, which the drawing package does not "
                           f"provide at all")
         elif exported and name not in exported:
             errors.append(f"server.py calls _draw.{name}, which resolves but is NOT in the "
                           f"drawing package's __all__ — add it to cad-planner/drawing/__init__.py")
     return errors
+
+
+# Tools that exist ONLY in the execution layer (no model-facing adapter tool); the adapter reaches them
+# through bridge._call_raw. Adding to this set is a deliberate decision.
+EXECUTION_ONLY_TOOLS = {"save_copy"}
+
+
+# Tools that exist ONLY in the adapter (no C# handler). Adding to this set is a deliberate decision.
+ADAPTER_ONLY_TOOLS = {
+    "analyze_drawing", "annotate_regions", "ask_user", "compare_assemblies", "compare_parts", "ensure_ready",
+    "get_recipe", "prepare_drawing", "rebuild_from_ir", "save_analysis", "submit_feature_graph",
+    "verify_against_interpretation", "replay_run", "job_status", "checkpoint",
+}
+
+
+def _csharp_tools():
+    """Tool names declared with [Tool("...")] on the C# service (source scan: no build needed)."""
+    root = os.path.join(_REPO_ROOT, "execution", "solidworks", "SolidworksExecution", "Services")
+    names = set()
+    for fn in os.listdir(root):
+        if fn.endswith(".cs"):
+            with open(os.path.join(root, fn), encoding="utf-8-sig") as fh:
+                names |= set(re.findall(r'\[Tool\("(\w+)"', fh.read()))
+    return names
+
+
+def find_csharp_drift():
+    """The C# registry, the adapter and tool-schemas.json must describe the same tool set."""
+    cs, adapter, contract = _csharp_tools(), set(_adapter_tools()), set(_contract_tools())
+    errors = []
+    if not cs:
+        return ["no [Tool(...)] attributes found in the C# services — registry scan is broken"]
+    for name in sorted((cs - adapter) - EXECUTION_ONLY_TOOLS):
+        errors.append(f"C# tool '{name}' has no adapter tool in server.py")
+    for name in sorted(EXECUTION_ONLY_TOOLS - cs):
+        errors.append(f"'{name}' is listed EXECUTION_ONLY_TOOLS but no C# [Tool] declares it")
+    for name in sorted(EXECUTION_ONLY_TOOLS & adapter):
+        errors.append(f"'{name}' is listed EXECUTION_ONLY_TOOLS but the adapter exposes it")
+    for name in sorted(cs - contract):
+        errors.append(f"C# tool '{name}' is missing from tool-schemas.json")
+    unexpected = sorted((adapter - cs) - ADAPTER_ONLY_TOOLS)
+    for name in unexpected:
+        errors.append(f"adapter tool '{name}' has no C# handler and is not in ADAPTER_ONLY_TOOLS")
+    for name in sorted(ADAPTER_ONLY_TOOLS & cs):
+        errors.append(f"'{name}' is listed ADAPTER_ONLY_TOOLS but a C# handler exists")
+    return errors
+
+
+def test_csharp_registry_in_sync():
+    """pytest entry point: C# [Tool] registry vs adapter vs contract."""
+    errors = find_csharp_drift()
+    assert not errors, "C#/adapter/contract drift detected:\n  - " + "\n  - ".join(errors)
 
 
 def test_schema_contract_in_sync():

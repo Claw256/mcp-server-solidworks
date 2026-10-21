@@ -170,12 +170,12 @@ def test_export_image_tool_returns_png_sized_to_limits():
             fh.write(_bmp24(4, 4, [[(1, 2, 3)] * 4] * 4))
         return {"status": "COMPLETED"}
 
-    real = server._call_raw
-    server._call_raw = fake_call_raw
+    real = server.bridge._call_raw
+    server.bridge._call_raw = fake_call_raw
     try:
         res = server.export_image(view="isometric,front", width=4000, height=4000)
     finally:
-        server._call_raw = real
+        server.bridge._call_raw = real
     assert isinstance(res[0], str) and len(res) == 3 and all(isinstance(r, Image) for r in res[1:]), res
     me, mt = dp.tier_limits()
     for _t, prm in calls:

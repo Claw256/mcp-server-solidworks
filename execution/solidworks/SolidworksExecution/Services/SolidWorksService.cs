@@ -229,6 +229,7 @@ namespace SolidworksExecution.Services
             return result;
         }
 
+        [Tool("open_new_part")]
         public ExecutionResponse OpenNewPart(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -314,6 +315,7 @@ namespace SolidworksExecution.Services
         // import as a PART via SolidWorks 3D Interconnect / translators (install/license dependent — a
         // failure returns a clear OPEN_FAILED so the caller can defer that sample, per the drawing plan).
         // Bumps state_version (a new active document is established), same effect class as open_new_part.
+        [Tool("open_document")]
         public ExecutionResponse OpenDocument(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -481,6 +483,7 @@ namespace SolidworksExecution.Services
             catch { return null; }
         }
 
+        [Tool("verify_state")]
         public ExecutionResponse VerifyState(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -546,6 +549,7 @@ namespace SolidworksExecution.Services
             }
         }
 
+        [Tool("close_document")]
         public ExecutionResponse CloseDocument(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -626,6 +630,7 @@ namespace SolidworksExecution.Services
             }
         }
 
+        [Tool("save_document")]
         public ExecutionResponse SaveDocument(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -713,6 +718,7 @@ namespace SolidworksExecution.Services
             }
         }
 
+        [Tool("export_document")]
         public ExecutionResponse ExportDocument(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -824,6 +830,7 @@ namespace SolidworksExecution.Services
             }
         }
 
+        [Tool("batch_export")]
         public ExecutionResponse BatchExport(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -952,6 +959,7 @@ namespace SolidworksExecution.Services
         // does NOT check/bump state_version (it's process-global and the activated doc's geometry is
         // unchanged). Lets a caller compare against another open part without OS window hacks.
         // -----------------------------------------------------------------------
+        [Tool("activate_document", CheckStateVersion = false)]
         public ExecutionResponse ActivateDocument(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))

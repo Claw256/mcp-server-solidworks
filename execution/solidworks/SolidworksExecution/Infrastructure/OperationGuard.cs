@@ -12,6 +12,10 @@ namespace SolidworksExecution.Infrastructure
         private readonly ConcurrentDictionary<string, ExecutionResponse> _completed
             = new ConcurrentDictionary<string, ExecutionResponse>();
 
+        // Bound the replay history: a long session would otherwise grow this forever. Oldest first out.
+        private const int MaxRemembered = 5000;
+        private readonly ConcurrentQueue<string> _order = new ConcurrentQueue<string>();
+
         private volatile int _currentStateVersion = 0;
 
         private OperationGuard() { }
@@ -42,9 +46,26 @@ namespace SolidworksExecution.Infrastructure
             return incomingStateVersion == _currentStateVersion;
         }
 
+        private readonly object _registerLock = new object();
+
         public void RegisterCompleted(string operationId, ExecutionResponse response)
         {
-            _completed[operationId] = response;
+            lock (_registerLock)       // registration + eviction as one step: two writers must not over-evict
+            {
+                if (_completed.TryAdd(operationId, response))
+                {
+                    _order.Enqueue(operationId);
+                    while (_completed.Count > MaxRemembered && _order.TryDequeue(out var oldest))
+                    {
+                        ExecutionResponse dropped;
+                        _completed.TryRemove(oldest, out dropped);
+                    }
+                }
+                else
+                {
+                    _completed[operationId] = response;     // same id again: keeps its original place in the queue
+                }
+            }
             Interlocked.Increment(ref _currentStateVersion);
         }
 
