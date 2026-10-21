@@ -24,7 +24,7 @@ import slddrw_merge
 # so valid selectors are never rejected. Editing this file requires reconnecting the
 # `solidworks` MCP server (no hot-reload — KNOWN-LIMITATIONS #4).
 
-# Every tool is registered with `structured_output=False`. All 46 return a `str`, so the
+# Every tool is registered with `structured_output=False`. All 52 return a `str`, so the
 # SDK's structured mirror is `{"result": "<the same string>"}` — the whole payload a second
 # time, for zero added information (measured: exactly 2.00x on both SDKs). Switching it off
 # halves the wire cost of every reader (the 33 KB `schema://feature-graph` read went over at
