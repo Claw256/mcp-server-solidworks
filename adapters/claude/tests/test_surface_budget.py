@@ -21,8 +21,8 @@ try:
 except Exception:  # noqa: BLE001
     _TOOLS = None
 
-TOTAL_CHARS_CEILING = 94_000          # measured 92.5K at the time of writing (54 tools)
-PER_TOOL_CHARS_CEILING = 13_500       # analyze_drawing is the outlier at ~12.9K
+TOTAL_CHARS_CEILING = 93_000          # measured 92.3K at the time of writing (56 tools)
+PER_TOOL_CHARS_CEILING = 13_500       # analyze_drawing is the outlier at ~13.1K
 TOOL_COUNT_CEILING = 56
 INTERNAL_REF = re.compile(r"ADR-\d+|KNOWN-LIMITATIONS|IR-ADR|\bP0\.\d|recipe\.md\b")
 

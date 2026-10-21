@@ -804,5 +804,28 @@
    }
   },
   "output": "string: RUNNING | job_id=... | kind | elapsed | ops | last_tool ; or COMPLETED|FAILED|CANCELLED | job_id=... followed by the build result ; or FAILED | JOB_NOT_FOUND | ..."
+ },
+ "checkpoint": {
+  "description": "[ADAPTER-ONLY \u2014 no COM, no REST, no state_version] Saves, lists or reopens a named copy of the document being built, to try an alternative without losing the current state (CAD ops are not transactional). save: a copy of the active document (SaveAs3 Copy; the original keeps its name, path and tree). restore: opens the copy as another document and activates it. list: the saved checkpoints. Saving over an existing name is refused.",
+  "input": {
+   "operation_id": "n/a - adapter-only",
+   "state_version": "n/a - adapter-only",
+   "params": {
+    "action": "string enum (optional, default 'list') - save | restore | list",
+    "name": "string (required for save/restore) - letters, digits, '_' or '-', max 40"
+   }
+  },
+  "output": "string: SAVED | ..., RESTORED | ..., a CHECKPOINTS list, or FAILED | <code> | ..."
+ },
+ "save_copy": {
+  "description": "[ADAPTER-ONLY \u2014 no COM, no REST, no state_version] Saves a COPY of the active document to file_path (IModelDocExtension.SaveAs3 with swSaveAsOptions_Silent|Copy) and keeps editing the original: unlike save_document(file_path), which is a real SaveAs, the active document's name, path and feature tree are untouched. Creates the folder if needed.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state)",
+   "params": {
+    "file_path": "string (required - full path of the copy including the .sldprt/.sldasm/.slddrw extension)"
+   }
+  },
+  "output": "-> see execution-response.json - Features = [the copy's path]; FAILED SAVE_FAILED / MISSING_PARAMETER / NO_ACTIVE_DOCUMENT"
  }
 }

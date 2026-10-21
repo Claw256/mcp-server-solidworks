@@ -97,6 +97,7 @@
     <Compile Include="Program.cs" />
     <Compile Include="Services\SolidWorksService.cs" />
     <Compile Include="Services\SolidWorksService.Diagnostics.cs" />
+    <Compile Include="Services\SolidWorksService.Checkpoint.cs" />
     <Compile Include="Services\SolidWorksService.Sketch.cs" />
     <Compile Include="Services\SolidWorksService.Features.cs" />
     <Compile Include="Services\SolidWorksService.SheetMetal.cs" />

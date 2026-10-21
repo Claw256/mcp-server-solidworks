@@ -80,7 +80,7 @@ def _contract_tools():
 def find_drift():
     """Return a list of human-readable drift messages (empty == in sync)."""
     adapter = _adapter_tools()
-    contract = _contract_tools()
+    contract = {k: v for k, v in _contract_tools().items() if k not in EXECUTION_ONLY_TOOLS}
     errors = []
 
     only_adapter = sorted(set(adapter) - set(contract))
@@ -167,11 +167,16 @@ def find_drawing_api_drift():
     return errors
 
 
+# Tools that exist ONLY in the execution layer (no model-facing adapter tool); the adapter reaches them
+# through bridge._call_raw. Adding to this set is a deliberate decision.
+EXECUTION_ONLY_TOOLS = {"save_copy"}
+
+
 # Tools that exist ONLY in the adapter (no C# handler). Adding to this set is a deliberate decision.
 ADAPTER_ONLY_TOOLS = {
     "analyze_drawing", "annotate_regions", "ask_user", "compare_assemblies", "compare_parts", "ensure_ready",
     "get_recipe", "prepare_drawing", "rebuild_from_ir", "save_analysis", "submit_feature_graph",
-    "verify_against_interpretation", "replay_run", "job_status",
+    "verify_against_interpretation", "replay_run", "job_status", "checkpoint",
 }
 
 
@@ -192,8 +197,12 @@ def find_csharp_drift():
     errors = []
     if not cs:
         return ["no [Tool(...)] attributes found in the C# services — registry scan is broken"]
-    for name in sorted(cs - adapter):
+    for name in sorted((cs - adapter) - EXECUTION_ONLY_TOOLS):
         errors.append(f"C# tool '{name}' has no adapter tool in server.py")
+    for name in sorted(EXECUTION_ONLY_TOOLS - cs):
+        errors.append(f"'{name}' is listed EXECUTION_ONLY_TOOLS but no C# [Tool] declares it")
+    for name in sorted(EXECUTION_ONLY_TOOLS & adapter):
+        errors.append(f"'{name}' is listed EXECUTION_ONLY_TOOLS but the adapter exposes it")
     for name in sorted(cs - contract):
         errors.append(f"C# tool '{name}' is missing from tool-schemas.json")
     unexpected = sorted((adapter - cs) - ADAPTER_ONLY_TOOLS)

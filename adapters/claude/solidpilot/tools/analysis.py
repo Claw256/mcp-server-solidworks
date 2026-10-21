@@ -92,61 +92,28 @@ def analyze_model(
 @mcp.tool(structured_output=False)
 def analyze_slddrw_test(include_geometry: bool = False, include_relations: bool = False,
                         include_extras: bool = False) -> str:
-    """TEST/REFERENCE TOOL — reads a NATIVE SolidWorks drawing (.SLDDRW) through COM.
+    """TEST/REFERENCE TOOL — reads the ACTIVE native SolidWorks drawing (.SLDDRW) through COM. Read-only.
 
-    ⚠ NOT the shipping drawing→part path. A .SLDDRW is SLDPRT-linked (its views go blank if the part
-      is gone) and nobody ships one — real inputs are DXF/DWG (and PDF). This tool survives for two
-      jobs ONLY: (a) checking a drawing YOU produced (do its dimensions match the model?), and
-      (b) generating COM ground truth to compare a DXF reader against. For a DXF/DWG job do NOT use
-      this tool and do NOT apply its discipline — the fields below (measures, section, normal_axis,
-      relations, extent, center_marks) are COM constructs that DO NOT EXIST in a DXF.
+    NOT the shipping drawing->part path (use analyze_drawing for DXF/DWG/PDF). A .SLDDRW is SLDPRT-linked and
+    nobody ships one; use this only to (a) check a drawing YOU produced against its model (dimension_count > 0,
+    values match) and (b) get COM ground truth to compare a DXF reader against. Its COM-only fields (measures,
+    section, normal_axis, relations, extent, center_marks) do not exist in a DXF.
 
-    ⮕ Reconstructing a part from a NATIVE SLDDRW (test/comparison work only)? The FROZEN
-      reverse-reading discipline is deliberately NOT on the MCP surface — it is the repo
-      file `cad-planner/slddrw-testing-recipe-usage.md`. Read it from disk when this tool is the
-      job; port a rule out of it into the active recipe only as a conscious decision.
+    Returns {view_count, dimension_count, views:[...]} in METERS/radians; the FIRST view is the sheet.
+    view {name, type, scale, pos[x,y], dimensions[], section?}; dimension {name, value_si, diametric?, attached?,
+    anchors?} — `diametric` true means an Ø is DATA, not a guess; an anchor beyond the base body's depth marks a
+    feature that extends past it. section {parent_view, cut_normal, axis?, frame{origin,xdir,ydir}, label?}:
+    a 2D point maps to 3D as origin + u*xdir + v*ydir.
 
-    Read-only, does NOT change state. Requires an active NATIVE drawing document. All lengths are
-    METERS (angles radians), 6 decimals. Returns {view_count, dimension_count, views:[…]}, and the
-    FIRST view is the drawing SHEET.
-
-    view — {name, type (swDrawingViewTypes_e int), scale, pos [x,y], dimensions[], section?}
-    dimension — {name, value_si, diametric?, attached?, anchors?}. `diametric` true means Ø is DATA,
-      not a guess. `anchors` are the dim's reference points in MODEL space; an anchor beyond the base
-      body's depth signals a feature that extends past it (offset-plane boss/loft), not bad data.
-    section (SECTION views only) — {parent_view, cut_normal (the cutting plane's MODEL-space normal,
-      i.e. the viewing direction), axis? (that normal snapped to X/Y/Z when axis-aligned), frame
-      {origin, xdir, ydir}, label?}. A 2D coord maps to 3D as p = origin + u*xdir + v*ydir.
-
-    include_geometry (default False) — each view's projected 2D geometry as clean primitives:
-      {lines[{x1,y1,x2,y2}], curves[{n,x1,y1,xm,ym,x2,y2,cx?,cy?,r?}] (partial arcs as start/mid/end
-      + fitted centre), circles[{cx,cy,r}] (FULL circles, true centre+radius), frame{origin,xdir,ydir,
-      normal_axis}, extent? }. Source IView.GetPolylines7; heavier payload, so use it when you need
-      the SHAPE, not for a dimension check. Two rules that fail silently if broken:
-      · `normal_axis` is the view's viewing direction as a SIGNED principal axis. A circle is the
-        cross-section of a feature whose axis runs along it, so circles in views with DIFFERENT
-        normal_axis are DIFFERENT features — never chain them into one by radius alone.
-      · `extent` {axis:[min,max]} is the SERVER-computed model-space span, frame signs applied. Read
-        it before any "no material beyond X" claim; never re-derive a span from raw 2D coordinates,
-        because a frame's direction components can be negative.
-
-    include_relations (default False; forces include_geometry) — additive deterministic enrichment;
-      pass BOTH for a reconstruction. Ids are positional per read: vid 'v<i>', and within a view
-      c<i>/a<i>/l<i> for circles/curves/lines. Every relation carries `source` (closed enum) and
-      `residual` (max deviation), so "why is this concentric?" is answerable by reading the field.
-      · relations — concentric {members,center,radii} (TRUST these centres, never re-derive),
-        equal_diameter {members,r,centers} (same Ø at distinct centres = twin bores), tangent.
-      · measures — per dimension, the primitive id(s) it measures. `unattached:true` means it
-        resolved to NO primitive: a loud gap to close from geometry, never to drop.
-      · center_marks / centerlines — which circles carry marks (on:[ids]), which segments run
-        through which (through:[ids]). A view that cannot expose its centerlines says so
-        ({centerlines_reported, unreadable:true}) instead of guessing.
-
-    include_extras (default False) — ADDS `extras` (default output unchanged): per sheet {name, paper_size,
-      scale_num/scale_den, projection first_angle|third_angle, width_m/height_m, template, notes[]}, per view
-      {name, referenced_model, referenced_configuration, type, scale, notes[], dimensions[{name, value_si,
-      tol?, text?{prefix,suffix,above,below}}]}, custom_properties, and errors[] for sub-reads that failed.
-      analyze_drawing(.slddrw) requests this itself and merges it into its artifact."""
+    include_geometry: each view's projected primitives {lines, curves, circles, frame{origin,xdir,ydir,
+      normal_axis}, extent?} (heavier). Two rules that fail silently: circles in views with DIFFERENT normal_axis
+      are DIFFERENT features — never chain them by radius; and read `extent` (server-computed model-space span)
+      before any "no material beyond X" claim instead of re-deriving it from 2D coordinates.
+    include_relations (forces include_geometry): deterministic enrichment with `source` and `residual` on every
+      item — concentric / equal_diameter / tangent relations (trust the centres), `measures` (which primitive each
+      dimension measures; `unattached:true` is a gap to close, never to drop), center_marks / centerlines.
+    include_extras: ADDS `extras` (sheet paper size/scale/projection, per-view referenced model and notes,
+      dimension tolerances/text, custom properties, errors[]); analyze_drawing(.slddrw) requests it itself."""
     return _call("analyze_slddrw_test", {"include_geometry": include_geometry,
                                          "include_relations": include_relations,
                                          "include_extras": include_extras})
