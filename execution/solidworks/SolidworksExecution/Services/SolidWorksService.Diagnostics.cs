@@ -87,6 +87,79 @@ namespace SolidworksExecution.Services
             return list;
         }
 
+        // ---- modal-dialog guard ----------------------------------------------------------------------------
+        // A rebuild warning or a feature error normally opens a MODAL dialog, which freezes the STA thread
+        // (and so every request) until someone clicks it. The API documents the remedy for exactly this:
+        // read swShowErrorsEveryRebuild, set it false around the rebuild, restore it afterwards
+        // (ISldWorks::GetUserPreferenceToggle / IModelDoc2::ShowFeatureErrorDialog). The failure is not
+        // lost: the response's `diagnostics` reports new feature errors. Scoped to ONE tool call and always
+        // restored, so the user's own SolidWorks settings are never left changed.
+        // SOLIDPILOT_SUPPRESS_DIALOGS=0 turns it off (the user then sees the dialogs, and a hang is possible).
+        public static bool DialogSuppressionEnabled
+        {
+            get
+            {
+                var v = System.Environment.GetEnvironmentVariable("SOLIDPILOT_SUPPRESS_DIALOGS");
+                return v == null || (v.Trim() != "0" && !v.Trim().Equals("false", StringComparison.OrdinalIgnoreCase));
+            }
+        }
+
+        private static readonly swUserPreferenceToggle_e[] DialogToggles =
+        {
+            swUserPreferenceToggle_e.swShowErrorsEveryRebuild,      // rebuild-warning dialogs
+            swUserPreferenceToggle_e.swSketchPromptToCloseSketch,   // "the sketch is open, use contour?" prompts
+        };
+
+        /// <summary>Suppress feature/rebuild dialogs until disposed. Never throws; a no-op when disabled.</summary>
+        public IDisposable SuppressDialogs()
+        {
+            if (!DialogSuppressionEnabled || _solidWorks == null) return null;
+            return new DialogScope(_solidWorks, _solidWorks.IActiveDoc2 as IModelDoc2);
+        }
+
+        private sealed class DialogScope : IDisposable
+        {
+            private readonly ISldWorks _app;
+            private readonly IModelDoc2 _doc;
+            private readonly List<KeyValuePair<swUserPreferenceToggle_e, bool>> _saved =
+                new List<KeyValuePair<swUserPreferenceToggle_e, bool>>();
+            private bool? _savedFeatureDialog;
+
+            public DialogScope(ISldWorks app, IModelDoc2 doc)
+            {
+                _app = app; _doc = doc;
+                foreach (var t in DialogToggles)
+                {
+                    try
+                    {
+                        bool prev = _app.GetUserPreferenceToggle((int)t);
+                        _saved.Add(new KeyValuePair<swUserPreferenceToggle_e, bool>(t, prev));
+                        _app.SetUserPreferenceToggle((int)t, false);
+                    }
+                    catch { /* best effort: a toggle that cannot be set is simply left alone */ }
+                }
+                try
+                {
+                    if (_doc != null) { _savedFeatureDialog = _doc.ShowFeatureErrorDialog; _doc.ShowFeatureErrorDialog = false; }
+                }
+                catch { _savedFeatureDialog = null; }
+            }
+
+            public void Dispose()
+            {
+                foreach (var kv in _saved)
+                {
+                    try { _app.SetUserPreferenceToggle((int)kv.Key, kv.Value); } catch { }
+                }
+                try
+                {
+                    // the active document may have changed during the tool (e.g. open_document): restore on the one we touched
+                    if (_doc != null && _savedFeatureDialog.HasValue) _doc.ShowFeatureErrorDialog = _savedFeatureDialog.Value;
+                }
+                catch { }
+            }
+        }
+
         private static double? ReadVolume(IModelDoc2 doc)
         {
             if (!(doc is IPartDoc)) return null;                    // assemblies: mass reads are slow and not the question

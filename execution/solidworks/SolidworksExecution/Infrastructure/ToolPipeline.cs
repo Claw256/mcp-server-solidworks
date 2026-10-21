@@ -29,7 +29,11 @@ namespace SolidworksExecution.Infrastructure
 
             var baseline = entry.Diagnose ? service.CaptureDiagnosticsBaseline() : null;
             var sw = Stopwatch.StartNew();
-            var response = entry.Invoke(service, request);
+            ExecutionResponse response;
+            // Feature tools run with modal rebuild/feature dialogs suppressed (restored afterwards), so a
+            // failing feature returns its error in `diagnostics` instead of freezing the STA thread.
+            using (entry.Diagnose ? service.SuppressDialogs() : null)
+                response = entry.Invoke(service, request);
             if (entry.Diagnose && response != null && response.Status == "COMPLETED")
             {
                 var diag = service.CollectDiagnostics(baseline);

@@ -89,6 +89,26 @@ namespace SolidworksExecution.Tests
         }
 
         [Fact]
+        public void Dialog_suppression_is_on_by_default_and_the_env_var_turns_it_off()
+        {
+            const string name = "SOLIDPILOT_SUPPRESS_DIALOGS";
+            var original = System.Environment.GetEnvironmentVariable(name);
+            try
+            {
+                System.Environment.SetEnvironmentVariable(name, null);
+                Assert.True(SolidworksExecution.Services.SolidWorksService.DialogSuppressionEnabled);
+                foreach (var off in new[] { "0", "false", "FALSE", " 0 " })
+                {
+                    System.Environment.SetEnvironmentVariable(name, off);
+                    Assert.False(SolidworksExecution.Services.SolidWorksService.DialogSuppressionEnabled, off);
+                }
+                System.Environment.SetEnvironmentVariable(name, "1");
+                Assert.True(SolidworksExecution.Services.SolidWorksService.DialogSuppressionEnabled);
+            }
+            finally { System.Environment.SetEnvironmentVariable(name, original); }
+        }
+
+        [Fact]
         public void StaExecutor_times_out_without_hanging_the_caller()
         {
             var sta = StaExecutor.Instance;
