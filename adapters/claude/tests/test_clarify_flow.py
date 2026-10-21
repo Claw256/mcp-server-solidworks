@@ -145,3 +145,35 @@ def test_verify_with_nothing_built_and_nothing_given_says_so():
     from solidpilot import expectations
     expectations.remember(None, {})
     assert server.verify_against_interpretation().startswith("FAILED | NOTHING_TO_VERIFY")
+
+
+def test_verify_tool_measures_what_the_intent_checks_need():
+    """symmetric needs the bbox min/max and bolt_circles the faces: the tool must fetch them."""
+    server, di = _deps()
+    if server is None:
+        return
+    import math
+    faces = [{"kind": "cylinder", "origin": [0.025 * math.cos(2 * math.pi * k / 3), 0.0, 0.025 * math.sin(2 * math.pi * k / 3)],
+              "axis": [0, 1, 0], "radius": 0.003, "hole": True, "u_span": 2 * math.pi} for k in range(3)]
+    asked = []
+
+    def fake(tool, params):
+        asked.append(params.get("analysis_type"))
+        kind = params.get("analysis_type")
+        if kind == "bbox":
+            return {"status": "COMPLETED", "cadState": {"features": [
+                json.dumps({"min": [-0.03, 0.0, -0.03], "max": [0.03, 0.01, 0.03], "size": [0.06, 0.01, 0.06]})]}}
+        if kind == "faces":
+            return {"status": "COMPLETED", "cadState": {"features": [json.dumps({"faces": faces})]}}
+        return {"status": "COMPLETED", "cadState": {"features": []}}
+
+    real = server.bridge._call_raw
+    server.bridge._call_raw = fake
+    try:
+        out = server.verify_against_interpretation(json.dumps({
+            "symmetric": ["X", "Z"],
+            "bolt_circles": [{"center_mm": [0, 0, 0], "axis": "Y", "radius_mm": 25, "diameter_mm": 6, "count": 3}]}))
+    finally:
+        server.bridge._call_raw = real
+    assert "verify_against_interpretation: PASS" in out and "symmetric about X=0" in out and "bolt circle 3 x O6" in out
+    assert sorted(asked) == ["bbox", "faces"]

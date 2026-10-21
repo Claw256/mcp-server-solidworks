@@ -99,6 +99,53 @@ def test_merge_expected_lets_the_caller_override():
     assert merged["volume_mm3"] == 2.0 and "cg_mm" in merged and over == ["volume_mm3"]
 
 
+def _circle_holes(r_mm, n, dia_mm, cx=0.0, cz=0.0, skip_at=None, shift_mm=0.0):
+    """n holes (axis Y) on a circle of radius r_mm about (cx, cz) metres; optionally push one outwards."""
+    out = []
+    for k in range(n):
+        ang = 2 * math.pi * k / n
+        r = r_mm + (shift_mm if k == skip_at else 0.0)
+        out.append(_hole(cx + r / 1000.0 * math.cos(ang), cz + r / 1000.0 * math.sin(ang), dia_mm))
+    return out
+
+
+def test_bolt_circle_passes_when_all_holes_sit_on_the_circle():
+    spec = {"center_mm": [0, 0, 0], "axis": "Y", "radius_mm": 25.0, "diameter_mm": 6.0, "count": 6}
+    r = dv.evaluate({"bolt_circles": [spec]}, {"faces": _circle_holes(25.0, 6, 6.0)})
+    assert r["verdict"] == "PASS" and "expected 6 holes on the circle, built 6" in r["rows"][0]["detail"]
+
+
+def test_bolt_circle_fails_when_one_hole_is_off_the_circle():
+    spec = {"center_mm": [0, 0, 0], "axis": "Y", "radius_mm": 25.0, "diameter_mm": 6.0, "count": 6}
+    r = dv.evaluate({"bolt_circles": [spec]}, {"faces": _circle_holes(25.0, 6, 6.0, skip_at=2, shift_mm=3.0)})
+    row = r["rows"][0]
+    assert r["verdict"] == "FAIL" and "built 5" in row["detail"] and "28" in row["detail"]
+
+
+def test_bolt_circle_honours_the_centre_and_ignores_other_diameters_and_axes():
+    spec = {"center_mm": [40, 99, 10], "axis": "Y", "radius_mm": 12.0, "diameter_mm": 4.0, "count": 4}
+    faces = _circle_holes(12.0, 4, 4.0, cx=0.040, cz=0.010) + _circle_holes(12.0, 3, 9.0, cx=0.040, cz=0.010)
+    faces.append({"kind": "cylinder", "origin": [0.04, 0.0, 0.0], "axis": [1, 0, 0], "radius": 0.002,
+                  "hole": True, "u_span": 2 * math.pi})                      # a cross hole: wrong axis
+    assert dv.evaluate({"bolt_circles": [spec]}, {"faces": faces})["verdict"] == "PASS"
+
+
+def test_split_half_cylinder_faces_count_as_one_bolt_circle_hole():
+    spec = {"center_mm": [0, 0, 0], "axis": "Y", "radius_mm": 25.0, "diameter_mm": 6.0, "count": 1}
+    half = _hole(0.025, 0.0, 6.0, u_span=math.pi)
+    other = dict(half)
+    r = dv.evaluate({"bolt_circles": [spec]}, {"faces": [half, other]})
+    assert r["verdict"] == "PASS"
+
+
+def test_symmetry_about_the_origin():
+    centred = {"bbox": {"min": [-0.05, 0.0, -0.025], "max": [0.05, 0.02, 0.025], "size": [0.1, 0.02, 0.05]}}
+    assert dv.evaluate({"symmetric": ["X", "Z"]}, centred)["verdict"] == "PASS"
+    r = dv.evaluate({"symmetric": ["X", "Y"]}, centred)                      # Y runs 0..20 mm: not symmetric
+    assert r["verdict"] == "FAIL" and [row["status"] for row in r["rows"]] == ["PASS", "FAIL"]
+    assert dv.evaluate({"symmetric": ["X"]}, {})["unchecked"][0].startswith("symmetric")
+
+
 if __name__ == "__main__":
     failed = 0
     for t in _TESTS:

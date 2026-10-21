@@ -659,7 +659,9 @@ def verify_against_interpretation(expected: str = "") -> str:
         drawing prints), every key optional:
         {"bbox_mm":[x,y,z] (overall size; axes compared SORTED unless "bbox_ordered":true),
          "volume_mm3":n, "volume_tol_pct":2, "cg_mm":[x,y,z], "cg_tol_mm":1,
-         "holes":[{"diameter_mm":8,"count":4}], "tol_mm":0.1}
+         "holes":[{"diameter_mm":8,"count":4}], "tol_mm":0.1,
+         "bolt_circles":[{"center_mm":[0,0,0],"axis":"Z","radius_mm":25,"diameter_mm":6,"count":6}],
+         "symmetric":["X","Z"]}  (the last two check DESIGN INTENT: a bolt circle, symmetry about the origin)
     Measures bbox + mass properties + faces via analyze_model and reports FAIL rows with deltas, WARN for
     built-but-unlisted holes, and NOT CHECKED for anything it could not measure. cg_mm is the check that
     catches a mirrored / wrong-face feature (volume stays equal). A PASS covers only what you listed."""
@@ -687,7 +689,7 @@ def verify_against_interpretation(expected: str = "") -> str:
 
     measured = {"bbox": None, "volume": None, "cg": None, "faces": None}
     try:
-        if "bbox_mm" in exp:
+        if "bbox_mm" in exp or "symmetric" in exp:
             try:
                 items = _analysis_items(bridge._call_raw("analyze_model", {"analysis_type": "bbox", "name": ""}))
                 measured["bbox"] = json.loads(items[0]) if items else None
@@ -698,7 +700,7 @@ def verify_against_interpretation(expected: str = "") -> str:
             measured["volume"] = mass.get("volume")
             if all(isinstance(mass.get(k), (int, float)) for k in ("cx", "cy", "cz")):
                 measured["cg"] = [mass["cx"], mass["cy"], mass["cz"]]
-        if "holes" in exp:
+        if "holes" in exp or "bolt_circles" in exp:
             items = _analysis_items(bridge._call_raw("analyze_model", {"analysis_type": "faces", "name": ""}))
             measured["faces"] = json.loads(items[0]).get("faces", []) if items else []
     except RuntimeError as ex:

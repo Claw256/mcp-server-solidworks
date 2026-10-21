@@ -635,7 +635,7 @@
    "operation_id": "n/a at this level — each underlying read carries its own operation_id (uuid4) on /api/tool/execute",
    "state_version": "n/a at this level — the underlying calls thread the adapter's tracked state_version",
    "params": {
-    "expected": "string (optional, default '' = check against what the last analyze_drawing build implies: volume and round-hole sizes/counts derived from the artifact; keys you pass override those. Otherwise a JSON object in MILLIMETRES, all keys optional: bbox_mm [x,y,z], bbox_ordered, volume_mm3, volume_tol_pct, cg_mm [x,y,z], cg_tol_mm, holes [{diameter_mm, count}], tol_mm)"
+    "expected": "string (optional, default '' = check against what the last analyze_drawing build implies: volume and round-hole sizes/counts derived from the artifact; keys you pass override those. Otherwise a JSON object in MILLIMETRES, all keys optional: bbox_mm [x,y,z], bbox_ordered, volume_mm3, volume_tol_pct, cg_mm [x,y,z], cg_tol_mm, holes [{diameter_mm, count}], bolt_circles [{center_mm, axis, radius_mm, diameter_mm, count}] (design intent: holes of one size on one circle), symmetric [\"X\",\"Z\"] (design intent: bbox centred on the origin), tol_mm)"
    }
   },
   "output": "Multi-line report: verifier verdict PASS/FAIL, one [PASS|FAIL|WARN] row per compared item with expected/built/delta, and [NOT CHECKED] rows for anything that could not be measured."
