@@ -1,26 +1,27 @@
 {
+  "_note": "WIRE format (camelCase, null fields omitted) - what the C# layer emits and adapters/claude reads. Two fields keep a snake_case name by explicit [JsonProperty]: last_known_state_version, result_geometry. tests/test_wire_contract.py diffs this file against Models/ExecutionResponse.cs and CadState.cs.",
   "COMPLETED": {
-    "operation_id": "string",
+    "operationId": "string",
     "status": "COMPLETED",
-    "verified": "boolean",
-    "state_version": "integer",
-    "cad_state": "→ state-format.json structure",
-    "error": null
+    "verified": "boolean (false when the tool succeeded but a feature it just made is reported in error: see diagnostics)",
+    "stateVersion": "integer",
+    "cadState": "-> state-format.json structure",
+    "result_geometry": "object|null - read-back of the real geometry a create tool produced (tool specific)",
+    "diagnostics": "object|null - post-tool health read-back for feature-mutating tools: {feature_errors_total, new_feature_errors:[{feature,type,code,error,warning}], whats_wrong, volume_m3, volume_delta_m3}"
   },
   "FAILED": {
-    "operation_id": "string",
+    "operationId": "string",
     "status": "FAILED",
-    "state_version": "integer (current state, not advanced)",
-    "cad_state": "→ state-format.json structure",
+    "verified": false,
+    "stateVersion": "integer (current state, not advanced)",
     "error": {
       "code": "string (e.g. FEATURE_CREATION_FAILED)",
       "message": "string (human readable)"
     }
   },
   "DUPLICATE": {
-    "operation_id": "string",
+    "operationId": "string",
     "status": "DUPLICATE",
-    "last_known_state_version": "integer",
-    "error": null
+    "last_known_state_version": "integer"
   }
 }

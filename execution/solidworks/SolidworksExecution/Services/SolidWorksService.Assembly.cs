@@ -629,7 +629,7 @@ namespace SolidworksExecution.Services
         // then close the preloaded doc (the assembly holds its own reference). fixed=true fixes
         // the inserted instance; fixed=false explicitly unfixes (SolidWorks auto-fixes a first
         // component in some flows — we make the state deterministic either way, C7 spirit).
-        [Tool("insert_component")]
+        [Tool("insert_component", Diagnose = true)]
         public ExecutionResponse InsertComponent(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -799,7 +799,7 @@ namespace SolidworksExecution.Services
         // value: METERS for distance, DEGREES for angle (C4 — degrees at tool boundaries).
         // After the mate: rebuild + report BOTH sides' component transforms (the per-mate stop
         // check — compare against the original's readback before the next mate).
-        [Tool("add_mate")]
+        [Tool("add_mate", Diagnose = true)]
         public ExecutionResponse AddMateTool(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))

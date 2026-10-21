@@ -28,6 +28,22 @@ namespace SolidworksExecution.Tests
         }
 
         [Fact]
+        public void Only_feature_mutating_tools_request_diagnostics()
+        {
+            ToolEntry e;
+            foreach (var name in new[] { "extrude_feature", "hole_wizard", "edit_feature", "add_mate" })
+            {
+                Assert.True(ToolRegistry.TryGet(name, out e));
+                Assert.True(e.Diagnose, name);
+            }
+            foreach (var name in new[] { "verify_state", "analyze_model", "create_sketch", "export_document" })
+            {
+                Assert.True(ToolRegistry.TryGet(name, out e));
+                Assert.False(e.Diagnose, name);
+            }
+        }
+
+        [Fact]
         public void Unknown_tool_is_not_found()
         {
             ToolEntry e;

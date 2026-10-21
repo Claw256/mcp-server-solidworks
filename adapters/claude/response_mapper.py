@@ -23,6 +23,31 @@ class CadOperationError(_ToolError, RuntimeError):
     """A failure the model should READ: the execution layer's code and message, verbatim."""
 
 
+def _render_diagnostics(diag) -> str:
+    """The model-facing form of the execution layer's post-tool health read-back ('' when absent).
+
+    A feature SolidWorks reports in error AFTER this call (and not before it) is stated plainly, because
+    the tool call itself succeeded and nothing else would tell the model the new feature is broken."""
+    if not diag:
+        return ""
+    out = ""
+    fresh = diag.get("new_feature_errors") or []
+    if fresh:
+        rows = ", ".join(
+            f"{e.get('feature')} ({e.get('type') or '?'}): {e.get('error')}"
+            + (" [warning]" if e.get("warning") else "") for e in fresh)
+        out += f" | FEATURE_ERRORS=[{rows}]"
+        if any(not e.get("warning") for e in fresh):
+            out += (" | WARNING: SolidWorks reports the feature(s) above in error although the call "
+                    "returned. Fix the inputs or remove them before building on this.")
+    if diag.get("volume_delta_m3") is not None:
+        out += f" | volume_delta_m3={diag['volume_delta_m3']}"
+    ww = diag.get("whats_wrong")
+    if ww and not fresh:
+        out += f" | whats_wrong={ww} (pre-existing items in the What's Wrong list)"
+    return out
+
+
 def map_response(response: dict) -> str:
     """
     Convert an ExecutionResponse dict into a MCP-compatible result string.
@@ -46,6 +71,7 @@ def map_response(response: dict) -> str:
         result_geometry = response.get("result_geometry")
         if result_geometry is not None:
             text += f" | result_geometry={json.dumps(result_geometry)}"
+        text += _render_diagnostics(response.get("diagnostics"))
         return text
 
     if status == "DUPLICATE":

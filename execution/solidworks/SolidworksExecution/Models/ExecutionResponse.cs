@@ -23,6 +23,11 @@ namespace SolidworksExecution.Models
         [JsonProperty("result_geometry", NullValueHandling = NullValueHandling.Ignore)]
         public object ResultGeometry { get; set; }
 
+        // Health read-back after a mutating tool (see ToolPipeline): new_feature_errors, whats_wrong,
+        // volume_m3 / volume_delta_m3. Null for tools that do not request it.
+        [JsonProperty("diagnostics", NullValueHandling = NullValueHandling.Ignore)]
+        public object Diagnostics { get; set; }
+
         public ExecutionError Error { get; set; }
     }
 

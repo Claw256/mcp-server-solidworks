@@ -135,7 +135,7 @@ namespace SolidworksExecution.Services
         // ray against the target face (ray starts 2 mm above the face along its normal, runs into it); the
         // hit face + point defines the hole centre. face_index / face_x/y/z is used only to read the face
         // normal (the face must be planar) so the ray direction is known.
-        [Tool("hole_wizard")]
+        [Tool("hole_wizard", Diagnose = true)]
         public ExecutionResponse HoleWizard(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))

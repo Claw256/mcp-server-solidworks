@@ -14,7 +14,7 @@ namespace SolidworksExecution.Services
     public partial class SolidWorksService
     {
 
-        [Tool("extrude_feature")]
+        [Tool("extrude_feature", Diagnose = true)]
         public ExecutionResponse ExtrudeFeature(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -350,7 +350,7 @@ namespace SolidworksExecution.Services
             }
         }
 
-        [Tool("create_rib")]
+        [Tool("create_rib", Diagnose = true)]
         public ExecutionResponse CreateRib(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -464,7 +464,7 @@ namespace SolidworksExecution.Services
             }
         }
 
-        [Tool("add_edge_feature")]
+        [Tool("add_edge_feature", Diagnose = true)]
         public ExecutionResponse AddEdgeFeature(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -858,7 +858,7 @@ namespace SolidworksExecution.Services
         // -----------------------------------------------------------------------
         // M20 — create_pattern
         // -----------------------------------------------------------------------
-        [Tool("create_pattern")]
+        [Tool("create_pattern", Diagnose = true)]
         public ExecutionResponse CreatePattern(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -1201,7 +1201,7 @@ namespace SolidworksExecution.Services
         // changes — unlike analyze). Flow: analyze_model(features) reports every feature's dimension
         // full-names + SI values → pick a name → modify_dimension(name, value).
         // -----------------------------------------------------------------------
-        [Tool("modify_dimension")]
+        [Tool("modify_dimension", Diagnose = true)]
         public ExecutionResponse ModifyDimension(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -1306,7 +1306,7 @@ namespace SolidworksExecution.Services
         // bumps state_version. RESOLVER PROBE (P1.3): suppress/delete CHANGE topology, so selectors or
         // coordinates captured earlier may no longer resolve — re-query with analyze_model afterwards.
         // -----------------------------------------------------------------------
-        [Tool("edit_feature")]
+        [Tool("edit_feature", Diagnose = true)]
         public ExecutionResponse EditFeature(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))

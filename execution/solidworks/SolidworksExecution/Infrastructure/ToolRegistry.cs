@@ -11,6 +11,7 @@ namespace SolidworksExecution.Infrastructure
     {
         public string Name { get; set; }
         public bool CheckStateVersion { get; set; }
+        public bool Diagnose { get; set; }
         public Func<SolidWorksService, ToolRequest, ExecutionResponse> Invoke { get; set; }
     }
 
@@ -43,6 +44,7 @@ namespace SolidworksExecution.Infrastructure
                 {
                     Name = attr.Name,
                     CheckStateVersion = attr.CheckStateVersion,
+                    Diagnose = attr.Diagnose,
                     Invoke = invoke,
                 };
             }

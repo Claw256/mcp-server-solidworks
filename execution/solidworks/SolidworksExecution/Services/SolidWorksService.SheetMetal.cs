@@ -17,7 +17,7 @@ namespace SolidworksExecution.Services
         // -----------------------------------------------------------------------
         // M22 — sheet_metal_feature
         // -----------------------------------------------------------------------
-        [Tool("sheet_metal_feature")]
+        [Tool("sheet_metal_feature", Diagnose = true)]
         public ExecutionResponse SheetMetalFeature(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))

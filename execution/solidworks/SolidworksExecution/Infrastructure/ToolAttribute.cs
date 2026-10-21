@@ -18,6 +18,13 @@ namespace SolidworksExecution.Infrastructure
         /// </summary>
         public bool CheckStateVersion { get; set; } = true;
 
+        /// <summary>
+        /// When true the pipeline reads the model's health before and after the tool and attaches
+        /// `diagnostics` (new feature errors, What's Wrong count, volume delta) to a COMPLETED response.
+        /// Set on tools that create or change features; read-only and sketch tools leave it off.
+        /// </summary>
+        public bool Diagnose { get; set; }
+
         public ToolAttribute(string name) { Name = name; }
     }
 }

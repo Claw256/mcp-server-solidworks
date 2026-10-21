@@ -27,8 +27,20 @@ namespace SolidworksExecution.Infrastructure
                 return ResponseBuilder.Failed(request.OperationId, guard.GetCurrentStateVersion(),
                     ErrorCodes.InvalidStateVersion, "Incoming state_version does not match current state.");
 
+            var baseline = entry.Diagnose ? service.CaptureDiagnosticsBaseline() : null;
             var sw = Stopwatch.StartNew();
             var response = entry.Invoke(service, request);
+            if (entry.Diagnose && response != null && response.Status == "COMPLETED")
+            {
+                var diag = service.CollectDiagnostics(baseline);
+                if (diag != null)
+                {
+                    response.Diagnostics = diag;
+                    // The tool ran, but SolidWorks reports a feature it JUST made in error: not verified.
+                    var fresh = diag["new_feature_errors"] as Newtonsoft.Json.Linq.JArray;
+                    if (fresh != null && fresh.Count > 0) response.Verified = false;
+                }
+            }
             ExecLog.Write($"   {request.Tool} op={request.OperationId} took {sw.ElapsedMilliseconds} ms");
             return response;
         }
