@@ -108,3 +108,40 @@ if __name__ == "__main__":
         if name.startswith("test_") and callable(fn):
             fn()
             print("ok", name)
+
+
+def test_build_then_verify_checks_the_part_against_the_drawing_itself():
+    """After a build, verify_against_interpretation() with no arguments uses what the drawing implies."""
+    server, di = _deps()
+    if server is None:
+        return
+    _out, _built = _run(di, "s1_flat.json", mode="build")            # 80 x 118.5664, two 10x10 cutouts, 2 mm
+    from solidpilot import expectations
+    source, derived = expectations.recall()
+    assert source.endswith("part.dxf") and abs(derived["volume_mm3"] - 18570.624) < 0.01
+    assert "holes" not in derived                                    # the cutouts are SQUARES, not holes
+
+    def fake(tool, params):
+        kind = params.get("analysis_type")
+        if kind == "mass_properties":
+            return {"status": "COMPLETED", "cadState": {"features": ["volume=1,8570624E-05", "cx=0", "cy=0", "cz=0"]}}
+        return {"status": "COMPLETED", "cadState": {"features": []}}
+
+    real = server.bridge._call_raw
+    server.bridge._call_raw = fake
+    try:
+        ok = server.verify_against_interpretation()
+        bad = server.verify_against_interpretation('{"volume_mm3": 30000}')
+    finally:
+        server.bridge._call_raw = real
+    assert "expected from the drawing part.dxf: volume_mm3" in ok and "verify_against_interpretation: PASS" in ok
+    assert "overridden by you: volume_mm3" in bad and "verify_against_interpretation: FAIL" in bad
+
+
+def test_verify_with_nothing_built_and_nothing_given_says_so():
+    server, di = _deps()
+    if server is None:
+        return
+    from solidpilot import expectations
+    expectations.remember(None, {})
+    assert server.verify_against_interpretation().startswith("FAILED | NOTHING_TO_VERIFY")

@@ -5,6 +5,7 @@ from typing import Literal
 import slddrw_merge
 from solidpilot import bridge
 from solidpilot import clarify
+from solidpilot import expectations
 from solidpilot.app import mcp
 from solidpilot.paths import CAD_PLANNER_DIR
 from solidpilot.tools.graph import _run_graph
@@ -509,6 +510,12 @@ def analyze_drawing(file_path: str, save_analysis: bool = True,
     text, ok, sv = _run_graph(graph, fresh_document=True)
     if not ok:
         return text
+    try:                                          # what verify_against_interpretation checks by default
+        import drawing_verify
+        derived = drawing_verify.derive_expected(s)
+        expectations.remember(src, derived)
+    except Exception:                             # noqa: BLE001 - verification aid, never fails a build
+        derived = {}
     tail = ["", "built from %s (sha256 %s) | state_version=%s"
             % (art["source"]["file"], art["source"]["sha256"][:12], sv),
             "VERIFY: analyze_model('mass_properties') should read V = %r m^3 "
@@ -520,6 +527,9 @@ def analyze_drawing(file_path: str, save_analysis: bool = True,
         tail.append("NOT BUILT: %s bend at %s (%s). The blank volume is unchanged by it, so no "
                     "measurement will catch it — add it or declare it (R15)."
                     % (r["dir"], r["at"], r["reason"]))
+    if derived:
+        tail.append("verify_against_interpretation() with no arguments now checks the model against the "
+                    "drawing itself (%s)." % ", ".join(sorted(derived)))
     if ledger_block:
         tail += ["", ledger_block]
     return text + "\n".join(tail)
@@ -632,11 +642,14 @@ def annotate_regions(file_path: str, marks: str, page: int = 1, region: str = ""
 
 
 @mcp.tool(structured_output=False)
-def verify_against_interpretation(expected: str) -> str:
+def verify_against_interpretation(expected: str = "") -> str:
     """Check the ACTIVE built part against your interpretation of a drawing (PDF/image/DXF) — a
     mechanical PASS/FAIL per item instead of eyeballing numbers.
 
-    expected: JSON string, MILLIMETRES (what the drawing prints), every key optional:
+    expected: optional. After analyze_drawing(mode='build') leave it EMPTY to check the model against
+        the drawing itself (volume, round-hole sizes/counts derived from the artifact — no transcription
+        by you). Keys you pass override the derived ones. Otherwise a JSON string, MILLIMETRES (what the
+        drawing prints), every key optional:
         {"bbox_mm":[x,y,z] (overall size; axes compared SORTED unless "bbox_ordered":true),
          "volume_mm3":n, "volume_tol_pct":2, "cg_mm":[x,y,z], "cg_tol_mm":1,
          "holes":[{"diameter_mm":8,"count":4}], "tol_mm":0.1}
@@ -644,8 +657,8 @@ def verify_against_interpretation(expected: str) -> str:
     built-but-unlisted holes, and NOT CHECKED for anything it could not measure. cg_mm is the check that
     catches a mirrored / wrong-face feature (volume stays equal). A PASS covers only what you listed."""
     try:
-        exp = json.loads(expected)
-        if not isinstance(exp, dict):
+        given = json.loads(expected) if expected.strip() else {}
+        if not isinstance(given, dict):
             raise ValueError("must be a JSON object")
     except Exception as ex:  # noqa: BLE001
         return f"FAILED | INVALID_JSON | expected must be a JSON object: {ex}"
@@ -653,6 +666,17 @@ def verify_against_interpretation(expected: str) -> str:
         import drawing_verify
     except Exception as ex:  # noqa: BLE001
         return f"FAILED | VERIFIER_UNAVAILABLE | {ex}"
+    source, derived = expectations.recall()
+    exp, overridden = drawing_verify.merge_expected(derived, given)
+    if not exp:
+        return ("FAILED | NOTHING_TO_VERIFY | no expected values given and no drawing has been built this "
+                "session — pass expected, or build with analyze_drawing(mode='build') first.")
+    provenance = ""
+    if derived:
+        provenance = "expected from the drawing %s: %s" % (os.path.basename(source or "?"), ", ".join(sorted(derived)))
+        if overridden:
+            provenance += "; overridden by you: " + ", ".join(sorted(overridden))
+        provenance += "\n"
 
     measured = {"bbox": None, "volume": None, "cg": None, "faces": None}
     try:
@@ -673,6 +697,6 @@ def verify_against_interpretation(expected: str) -> str:
     except RuntimeError as ex:
         return f"FAILED | MEASURE_FAILED | {ex}"
     try:
-        return drawing_verify.render(drawing_verify.evaluate(exp, measured))
+        return provenance + drawing_verify.render(drawing_verify.evaluate(exp, measured))
     except (KeyError, TypeError, ValueError) as ex:
         return f"FAILED | BAD_EXPECTED | {type(ex).__name__}: {ex} (see the tool description for the shape)"

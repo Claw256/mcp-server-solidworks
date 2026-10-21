@@ -74,6 +74,38 @@ def hole_summary(faces):
     return counts
 
 
+def derive_expected(summary):
+    """The `expected` dict a direct-build summary (lowering.assess -> summary) implies, in MILLIMETRES.
+
+    Built from the DRAWING, not from anyone's reading of it: the blank's area x thickness gives the
+    volume, and every cutout that is a true circle is a hole. A cutout counts as a circle only when its
+    bbox is square and its area matches pi/4 * d^2 within 0.5% (so a 10 x 10 square cutout is not a
+    hole). The bent-state bbox is deliberately NOT derived: it depends on bend order and K-factor.
+    Returns {} when the summary carries nothing usable."""
+    out = {}
+    exp = (summary or {}).get("expected") or {}
+    if isinstance(exp.get("volume_m3"), (int, float)) and exp["volume_m3"] > 0:
+        out["volume_mm3"] = round(exp["volume_m3"] * 1e9, 3)
+    holes = {}
+    for c in ((summary or {}).get("blank") or {}).get("cutouts") or []:
+        x0, y0, x1, y1 = c["bbox"]
+        w, h = x1 - x0, y1 - y0
+        if w > 0 and abs(w - h) <= 0.005 * w and abs(c["area_mm2"] - math.pi / 4.0 * w * w) <= 0.005 * c["area_mm2"]:
+            d = round(w, 3)
+            holes[d] = holes.get(d, 0) + 1
+    if holes:
+        out["holes"] = [{"diameter_mm": d, "count": n} for d, n in sorted(holes.items())]
+    return out
+
+
+def merge_expected(derived, override):
+    """Derived values first; any key the caller supplies wins. -> (merged, [keys overridden])."""
+    merged = dict(derived or {})
+    overridden = [k for k in (override or {}) if k in merged]
+    merged.update(override or {})
+    return merged, overridden
+
+
 def evaluate(expected, measured):
     """-> {"verdict": PASS|FAIL, "rows": [...], "unchecked": [...]}"""
     rows, unchecked = [], []

@@ -4,7 +4,6 @@ elicitation, otherwise as a structured list for the model to relay in chat.
 The remote relay (gateway -> agent) calls tools without a client session, so there the fallback is
 the normal path; with a direct stdio/HTTP client that declares elicitation, the user gets forms.
 """
-import asyncio
 import json
 from typing import Literal, Optional
 

@@ -81,6 +81,24 @@ def test_missing_hole_flag_warns():
 
 _TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
 
+def test_derive_expected_counts_only_true_circles_as_holes():
+    summary = {"expected": {"volume_m3": 1.8570624e-05},
+               "blank": {"cutouts": [
+                   {"loop": "L1", "area_mm2": 100.0, "bbox": [0, 0, 10, 10]},                 # square: NOT a hole
+                   {"loop": "L2", "area_mm2": 78.5398, "bbox": [0, 0, 10, 10]},               # circle d=10
+                   {"loop": "L3", "area_mm2": 78.5398, "bbox": [20, 0, 30, 10]},              # circle d=10
+                   {"loop": "L4", "area_mm2": 50.2655, "bbox": [0, 0, 8, 8]}]}}               # circle d=8
+    got = dv.derive_expected(summary)
+    assert got["volume_mm3"] == 18570.624
+    assert got["holes"] == [{"diameter_mm": 8.0, "count": 1}, {"diameter_mm": 10.0, "count": 2}]
+    assert dv.derive_expected({}) == {}
+
+
+def test_merge_expected_lets_the_caller_override():
+    merged, over = dv.merge_expected({"volume_mm3": 1.0, "holes": []}, {"volume_mm3": 2.0, "cg_mm": [0, 0, 0]})
+    assert merged["volume_mm3"] == 2.0 and "cg_mm" in merged and over == ["volume_mm3"]
+
+
 if __name__ == "__main__":
     failed = 0
     for t in _TESTS:
