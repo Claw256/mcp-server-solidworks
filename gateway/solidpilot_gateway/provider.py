@@ -50,8 +50,8 @@ class OwnerProvider(OAuthAuthorizationServerProvider[AuthorizationCode, RefreshT
     async def login_locked(self) -> bool:
         return await self.store.is_locked("login")
 
-    async def agent_locked(self) -> bool:
-        return await self.store.is_locked("agent")
+    async def agent_locked(self, ip: str = "") -> bool:
+        return await self.store.is_locked(f"agent:{ip}" if ip else "agent")
 
     # ----- dynamic client registration -------------------------------------------------------
     def _redirect_allowed(self, uri: str) -> bool:
@@ -185,14 +185,16 @@ class OwnerProvider(OAuthAuthorizationServerProvider[AuthorizationCode, RefreshT
         await self.store.delete("refresh", digest(token.token))
 
     # ----- agent (client_credentials) -------------------------------------------------------
-    async def authenticate_agent(self, client_id: str, client_secret: str) -> bool:
-        """Constant-time credential check; repeated failures lock only this endpoint, not owner login."""
+    async def authenticate_agent(self, client_id: str, client_secret: str, ip: str = "") -> bool:
+        """Constant-time credential check; repeated failures lock only this endpoint — and only the
+        offending address, so a stranger guessing at it cannot lock the real agent out."""
+        scope = f"agent:{ip}" if ip else "agent"
         ok_id = hmac.compare_digest(client_id.encode(), self.settings.agent_client_id.encode())
         ok_secret = hmac.compare_digest(client_secret.encode(), self.settings.agent_client_secret.encode())
         if ok_id and ok_secret:
-            await self.store.clear("fail:agent")
+            await self.store.clear(f"fail:{scope}")
             return True
-        await self._failed("agent")
+        await self._failed(scope)
         return False
 
     async def issue_agent_token(self) -> OAuthToken:

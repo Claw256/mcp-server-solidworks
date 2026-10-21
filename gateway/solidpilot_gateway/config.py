@@ -27,6 +27,15 @@ def _env(name: str, default: str = "") -> str:
     return os.getenv(name, default).lstrip("\ufeff").strip()
 
 
+def _num(name: str, default: str, cast=float):
+    """A numeric env var; a typo names the variable instead of dying with a bare ValueError."""
+    raw = _env(name, default)
+    try:
+        return cast(raw)
+    except ValueError:
+        raise SystemExit(f"{name} must be a number, got {raw!r}") from None
+
+
 def _csv(name: str) -> list[str]:
     return [v.strip() for v in _env(name).split(",") if v.strip()]
 
@@ -95,11 +104,11 @@ class Settings:
             agent_client_secret=_env("AGENT_CLIENT_SECRET"),
             redis_url=redis_url or "",
             redirect_uris=CLAUDE_REDIRECT_URIS + tuple(_csv("GATEWAY_EXTRA_REDIRECT_URIS")),
-            call_timeout=float(_env("GATEWAY_CALL_TIMEOUT", "200")),
+            call_timeout=_num("GATEWAY_CALL_TIMEOUT", "200"),
             allowed_hosts=[host, f"{host}:*"] if host else [],
             allowed_origins=_csv("GATEWAY_ALLOWED_ORIGINS") or ["https://claude.ai", "https://claude.com"],
             blob_token=_env("BLOB_READ_WRITE_TOKEN"),
-            delivery_ttl=int(_env("GATEWAY_DELIVERY_TTL", "3600")),
-            delivery_max_bytes=int(_env("GATEWAY_DELIVERY_MAX_MB", "50")) * 1024 * 1024,
+            delivery_ttl=_num("GATEWAY_DELIVERY_TTL", "3600", int),
+            delivery_max_bytes=_num("GATEWAY_DELIVERY_MAX_MB", "50", int) * 1024 * 1024,
             cron_secret=_env("CRON_SECRET"),
         )

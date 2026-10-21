@@ -104,7 +104,8 @@ def create_app(settings: Settings, redis=None, blob: BlobBackend | None = None) 
 
     # ----- agent token (OAuth client_credentials) ---------------------------------------------
     async def agent_token(request: Request) -> JSONResponse:
-        if await provider.agent_locked():
+        ip = _client_ip(request)
+        if await provider.agent_locked(ip):
             return JSONResponse({"error": "temporarily_unavailable"}, status_code=429, headers=_NOSTORE)
         form = await request.form()
         if form.get("grant_type") != "client_credentials":
@@ -118,7 +119,7 @@ def create_app(settings: Settings, redis=None, blob: BlobBackend | None = None) 
                 client_id, client_secret = unquote(client_id), unquote(client_secret)  # RFC 6749 §2.3.1
             except ValueError:
                 pass
-        if not await provider.authenticate_agent(client_id, client_secret):
+        if not await provider.authenticate_agent(client_id, client_secret, ip):
             return JSONResponse({"error": "invalid_client"}, status_code=401,
                                 headers={**_NOSTORE, "WWW-Authenticate": "Basic"})
         resource = form.get("resource")
@@ -241,7 +242,17 @@ def create_app(settings: Settings, redis=None, blob: BlobBackend | None = None) 
         return JSONResponse({"deleted": await deliveries.sweep()}, headers=_NOSTORE)
 
     async def health(request: Request) -> JSONResponse:
-        return JSONResponse({"ok": True, "agent_connected": await relay.connected()})
+        """Liveness AND the dependency that every request needs: a Redis outage used to show up only
+        as scattered 500s while this answered ok."""
+        try:
+            await store.redis.ping()
+            redis_ok = True
+        except Exception:                                  # noqa: BLE001 - any failure means "not ok"
+            redis_ok = False
+        body = {"ok": redis_ok, "redis": redis_ok}
+        if redis_ok:
+            body["agent_connected"] = await relay.connected()
+        return JSONResponse(body, status_code=200 if redis_ok else 503, headers=_NOSTORE)
 
     @contextlib.asynccontextmanager
     async def lifespan(_app):

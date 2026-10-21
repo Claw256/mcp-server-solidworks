@@ -91,7 +91,9 @@ class Deliveries:
 
     # ----- 3. done -------------------------------------------------------------------------------------
     async def complete(self, slot: str, size: int) -> dict[str, Any]:
-        rec = await self.store.pop("slot", slot) if re.fullmatch(r"[0-9a-f]{32}", slot or "") else None
+        # Read first, pop LAST: a transient storage error (or a not-yet-visible upload) must leave the
+        # slot retryable. The pop is the atomic claim, so two racing completes still issue ONE link.
+        rec = await self.store.get("slot", slot) if re.fullmatch(r"[0-9a-f]{32}", slot or "") else None
         if rec is None or rec.get("state") != "uploading":
             raise DeliveryError("INVALID_SLOT", "unknown, expired or already completed delivery slot")
         try:
@@ -101,8 +103,11 @@ class Deliveries:
         if info is None:
             raise DeliveryError("UPLOAD_MISSING", "the file was not found in storage; upload it first")
         if info["size"] != rec["size"] or size != rec["size"]:
+            await self.store.pop("slot", slot)
             await self._drop(rec["pathname"])
             raise DeliveryError("SIZE_MISMATCH", "uploaded size does not match the announced size")
+        if await self.store.pop("slot", slot) is None:
+            raise DeliveryError("INVALID_SLOT", "unknown, expired or already completed delivery slot")
         token = secrets.token_urlsafe(32)
         expires = time.time() + self.ttl
         await self.store.put("dl", digest(token), {
@@ -122,6 +127,12 @@ class Deliveries:
         try:
             return await self.blob.presign_get(rec["pathname"], GET_URL_TTL)
         except BlobError:
+            # The user never got the file: give the link back for the rest of its life instead of
+            # burning it on a storage hiccup.
+            remaining = rec["expires"] - time.time()
+            if remaining > 0:
+                await self.store.put("dl", digest(token), rec, ttl=remaining)
+                await self.redis.zadd(INDEX, {rec["pathname"]: rec["expires"]})
             return None
 
     # ----- housekeeping -------------------------------------------------------------------------------

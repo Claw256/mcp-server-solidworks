@@ -146,3 +146,64 @@ async def test_repeated_guessing_is_rate_limited(gateway_blob):
     async with httpx.AsyncClient(follow_redirects=False) as c:
         codes = [(await c.get(f"{gateway_blob.url}/dl/{'g' * 43}")).status_code for _ in range(22)]
     assert codes[0] == 404 and codes[-1] == 429
+
+
+async def _uploaded_slot(gw, fake_blob, data=b"12345"):
+    """A slot taken all the way to 'uploaded, not yet completed' without going through the chat."""
+    d = gw.app.state.deliveries
+    slot = await d.open_slot("client")
+    up = await d.request_upload(slot, "p.step", len(data))
+    fake_blob.upload(up["pathname"], data)
+    return d, slot, up["pathname"]
+
+
+async def test_storage_error_at_completion_leaves_the_slot_retryable(gateway_blob, fake_blob):
+    from solidpilot_gateway.blobstore import BlobError
+    from solidpilot_gateway.deliveries import DeliveryError
+    d, slot, _path = await _uploaded_slot(gateway_blob, fake_blob)
+    real_head = fake_blob.head
+
+    async def flaky(pathname):
+        raise BlobError("storage hiccup")
+    fake_blob.head = flaky
+    try:
+        try:
+            await d.complete(slot, 5)
+            assert False, "expected STORAGE_ERROR"
+        except DeliveryError as e:
+            assert e.code == "STORAGE_ERROR"
+    finally:
+        fake_blob.head = real_head
+    done = await d.complete(slot, 5)                    # the same slot completes on the retry
+    assert done["filename"] == "p.step" and done["download_url"].startswith(f"{gateway_blob.url}/dl/")
+    try:
+        await d.complete(slot, 5)
+        assert False, "a slot completes only once"
+    except DeliveryError as e:
+        assert e.code == "INVALID_SLOT"
+
+
+async def test_racing_completes_issue_exactly_one_link(gateway_blob, fake_blob):
+    from solidpilot_gateway.deliveries import DeliveryError
+    d, slot, _path = await _uploaded_slot(gateway_blob, fake_blob)
+    results = await asyncio.gather(d.complete(slot, 5), d.complete(slot, 5), return_exceptions=True)
+    links = [r for r in results if isinstance(r, dict)]
+    errors = [r for r in results if isinstance(r, DeliveryError)]
+    assert len(links) == 1 and len(errors) == 1 and errors[0].code == "INVALID_SLOT"
+
+
+async def test_storage_error_on_redeem_does_not_burn_the_link(gateway_blob, fake_blob):
+    from solidpilot_gateway.blobstore import BlobError
+    d, slot, _path = await _uploaded_slot(gateway_blob, fake_blob)
+    token = (await d.complete(slot, 5))["download_url"].rsplit("/", 1)[1]
+    real_get = fake_blob.presign_get
+
+    async def flaky(pathname, ttl):
+        raise BlobError("storage hiccup")
+    fake_blob.presign_get = flaky
+    try:
+        assert await d.redeem(token) is None            # the user sees a miss this time ...
+    finally:
+        fake_blob.presign_get = real_get
+    assert await d.redeem(token) is not None            # ... but the link still works afterwards
+    assert await d.redeem(token) is None                # and is single-use once it has worked
