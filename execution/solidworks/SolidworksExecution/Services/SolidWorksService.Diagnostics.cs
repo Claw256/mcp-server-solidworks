@@ -79,7 +79,7 @@ namespace SolidworksExecution.Services
                 e["feature"] = f.Name;
                 try { e["type"] = f.GetTypeName2(); } catch { }
                 e["code"] = code;
-                e["error"] = Enum.GetName(typeof(swFeatureError_e), code) ?? ("code " + code);
+                e["error"] = FeatureErrorNames.For(code);
                 e["warning"] = isWarning;
                 e["key"] = f.Name + "|" + code;
                 list.Add(e);
@@ -104,10 +104,11 @@ namespace SolidworksExecution.Services
             }
         }
 
-        private static readonly swUserPreferenceToggle_e[] DialogToggles =
+        // Inlined enum constants (ints), never the enum type itself: see FeatureErrorNames.
+        private static readonly int[] DialogToggles =
         {
-            swUserPreferenceToggle_e.swShowErrorsEveryRebuild,      // rebuild-warning dialogs
-            swUserPreferenceToggle_e.swSketchPromptToCloseSketch,   // "the sketch is open, use contour?" prompts
+            (int)swUserPreferenceToggle_e.swShowErrorsEveryRebuild,      // rebuild-warning dialogs
+            (int)swUserPreferenceToggle_e.swSketchPromptToCloseSketch,   // "the sketch is open, use contour?" prompts
         };
 
         /// <summary>Suppress feature/rebuild dialogs until disposed. Never throws; a no-op when disabled.</summary>
@@ -121,8 +122,7 @@ namespace SolidworksExecution.Services
         {
             private readonly ISldWorks _app;
             private readonly IModelDoc2 _doc;
-            private readonly List<KeyValuePair<swUserPreferenceToggle_e, bool>> _saved =
-                new List<KeyValuePair<swUserPreferenceToggle_e, bool>>();
+            private readonly List<KeyValuePair<int, bool>> _saved = new List<KeyValuePair<int, bool>>();
             private bool? _savedFeatureDialog;
 
             public DialogScope(ISldWorks app, IModelDoc2 doc)
@@ -132,9 +132,9 @@ namespace SolidworksExecution.Services
                 {
                     try
                     {
-                        bool prev = _app.GetUserPreferenceToggle((int)t);
-                        _saved.Add(new KeyValuePair<swUserPreferenceToggle_e, bool>(t, prev));
-                        _app.SetUserPreferenceToggle((int)t, false);
+                        bool prev = _app.GetUserPreferenceToggle(t);
+                        _saved.Add(new KeyValuePair<int, bool>(t, prev));
+                        _app.SetUserPreferenceToggle(t, false);
                     }
                     catch { /* best effort: a toggle that cannot be set is simply left alone */ }
                 }
@@ -149,7 +149,7 @@ namespace SolidworksExecution.Services
             {
                 foreach (var kv in _saved)
                 {
-                    try { _app.SetUserPreferenceToggle((int)kv.Key, kv.Value); } catch { }
+                    try { _app.SetUserPreferenceToggle(kv.Key, kv.Value); } catch { }
                 }
                 try
                 {
