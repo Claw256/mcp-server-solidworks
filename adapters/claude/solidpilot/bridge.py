@@ -7,6 +7,7 @@ Owns the in-memory state_version and the ONE retry/resync path. Tool modules cal
 """
 from execution_client import call_tool, get_state, ExecutionLayerError
 from response_mapper import map_response, CadOperationError
+from solidpilot import jobs
 from solidpilot import runs
 
 
@@ -48,6 +49,12 @@ _is_state_mismatch = is_state_mismatch   # historical name
 def _execute(tool_name: str, params: dict) -> dict:
     """The single retry core: one call, and on INVALID_STATE_VERSION fetch the authoritative
     state_version and retry once with a fresh operation_id."""
+    busy = jobs.blocked_for_this_thread()
+    if busy is not None:
+        raise CadOperationError(
+            f"A background build is running (job {busy.id}, {busy.kind}); {tool_name} was NOT sent so it "
+            f"cannot land in the middle of it. Poll job_status(job_id='{busy.id}') and retry when it is done.")
+    jobs.checkpoint(tool_name)
     response = call_tool(tool_name, _next_operation_id(tool_name), state.version, params)
     if is_state_mismatch(response):
         state.version = get_state()

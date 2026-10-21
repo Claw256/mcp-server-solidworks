@@ -28,7 +28,7 @@ except ImportError:
     from pycompiler.execution_port import ExecutionPort
 
 from execution_client import call_tool, get_state          # noqa: E402
-from solidpilot import runs                                            # noqa: E402
+from solidpilot import jobs, runs                                      # noqa: E402
 from solidpilot.bridge import is_state_mismatch as _is_state_mismatch   # noqa: E402  (single source of truth)
 
 
@@ -41,6 +41,7 @@ class AdapterExecutionPort(ExecutionPort):
     """
 
     def execute(self, tool, params, state_version):
+        jobs.checkpoint(tool)                  # progress for job_status; raises JobCancelled on a cancel request
         resp = call_tool(tool, runs.operation_id(tool), state_version, params)
         if _is_state_mismatch(resp):
             fresh = get_state()

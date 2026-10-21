@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 from solidpilot import bridge
+from solidpilot import jobs
 from solidpilot import runs
 from solidpilot.app import mcp
 
@@ -10,7 +11,7 @@ from solidpilot.app import mcp
 # Tool: rebuild_from_ir  (adapter-only — the analysis pipeline's IR door, IR-ADR-005)
 # ---------------------------------------------------------------------------
 @mcp.tool(structured_output=False)
-def rebuild_from_ir(artifact_path: str, fresh_document: bool = True) -> str:
+def rebuild_from_ir(artifact_path: str, fresh_document: bool = True, background: bool = False) -> str:
     """Rebuild a part from its analysis artifact's Feature Graph IR — the verification half of
     the round-trip ("the LLM proposes, the round-trip decides"). Reads
     `<...>.analysis.json`, takes `ir.graph`, and executes it through the SAME deterministic
@@ -28,7 +29,12 @@ def rebuild_from_ir(artifact_path: str, fresh_document: bool = True) -> str:
     far it got — partial geometry may remain; CAD ops are not transactional). Afterwards, verify
     with compare_parts and only then label the artifact's ir.verification. If you are GENERATING
     the ir.graph yourself, read the MCP resource `recipe://usage/index` first — it indexes the
-    mapping/canonicalization rules the compiler expects."""
+    mapping/canonicalization rules the compiler expects.
+
+    background=True: start the build and return a job id at once (see job_status) — for builds that may
+    outlast a chat call."""
+    if background:
+        return jobs.launch("rebuild_from_ir", lambda: rebuild_from_ir(artifact_path, fresh_document, False))
     path = os.path.abspath(artifact_path)
     if not os.path.isfile(path):
         return f"FAILED | ARTIFACT_NOT_FOUND | {path}"
@@ -133,7 +139,7 @@ def _run_graph_inner(graph_obj, fresh_document):
 
 
 @mcp.tool(structured_output=False)
-def submit_feature_graph(graph: str, fresh_document: bool = True) -> str:
+def submit_feature_graph(graph: str, fresh_document: bool = True, background: bool = False) -> str:
     """Build a part (or assembly) from a Feature Graph IR in ONE call — the deterministic
     compiler lowers each IR node to the right low-level tool sequence and resolves references
     (geometric anchors, runtime feature names) against live geometry.
@@ -171,13 +177,15 @@ def submit_feature_graph(graph: str, fresh_document: bool = True) -> str:
         graph_obj = json.loads(graph)
     except Exception as ex:  # noqa: BLE001
         return f"FAILED | INVALID_JSON | the graph is not valid JSON: {ex}"
+    if background:
+        return jobs.launch("submit_feature_graph", lambda: submit_feature_graph(graph, fresh_document, False))
 
     text, ok, sv = _run_graph(graph_obj, fresh_document, kind="submit_feature_graph")
     return text + f" | state_version={sv}"      # resynced after every run, success or not
 
 
 @mcp.tool(structured_output=False)
-def replay_run(run_id: str = "", fresh_document: bool = True) -> str:
+def replay_run(run_id: str = "", fresh_document: bool = True, background: bool = False) -> str:
     """Re-run a recorded build exactly: the same Feature Graph, through the same compiler, as a NEW run.
 
     Every graph build (submit_feature_graph, rebuild_from_ir, analyze_drawing build) ends with `run_id=...`
@@ -185,7 +193,10 @@ def replay_run(run_id: str = "", fresh_document: bool = True) -> str:
     reproduce a result, to retry after fixing the environment (e.g. a modal dialog), or to rebuild on a
     fresh document. run_id='' lists the most recent runs. The manifest's graph hash is verified first; an
     edited record is refused. CAD ops are not transactional: a replay on a non-fresh document appends.
-    fresh_document (default True) opens a new blank document first, as the original did."""
+    fresh_document (default True) opens a new blank document first, as the original did.
+    background=True starts the replay as a job (see job_status)."""
+    if background and run_id.strip():
+        return jobs.launch("replay_run", lambda: replay_run(run_id, fresh_document, False))
     if not run_id.strip():
         rows = runs.recent()
         if not rows:
@@ -198,3 +209,15 @@ def replay_run(run_id: str = "", fresh_document: bool = True) -> str:
         return f"FAILED | RUN_NOT_FOUND | {err}"
     text, ok, sv = _run_graph(manifest["graph"], fresh_document, kind="replay", source=manifest["run_id"])
     return text + f" | state_version={sv} | replayed_from={manifest['run_id']}"
+
+
+@mcp.tool(structured_output=False)
+def job_status(job_id: str = "", wait_s: float = 20.0, cancel: bool = False) -> str:
+    """Check (or cancel) a background build started with background=True.
+
+    job_id: the id from JOB_STARTED ('' = the most recent job). wait_s (default 20, max 25): how long to
+    wait for it to finish before answering RUNNING with progress (operations executed, last tool).
+    cancel=True: stop it before its next operation — geometry built so far REMAINS (CAD ops are not
+    transactional). Returns RUNNING | ..., or COMPLETED/FAILED/CANCELLED followed by the build's own result.
+    While a job runs every other CAD call is refused so nothing lands in the middle of the build."""
+    return jobs.status(job_id.strip(), wait_s, cancel)

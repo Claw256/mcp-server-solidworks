@@ -5,6 +5,7 @@ from typing import Literal
 import slddrw_merge
 from solidpilot import bridge
 from solidpilot import clarify
+from solidpilot import jobs
 from solidpilot import expectations
 from solidpilot.app import mcp
 from solidpilot.paths import CAD_PLANNER_DIR
@@ -197,7 +198,7 @@ def _wire_json(obj) -> str:
 def analyze_drawing(file_path: str, save_analysis: bool = True,
                     mode: Literal["auto", "ir", "build"] = "auto", layout: str = "",
                     page: int = 1, scale: str = "", pen_mm: float = 0.0,
-                    answers: str = "", accept_defaults: bool = False) -> str:
+                    answers: str = "", accept_defaults: bool = False, background: bool = False) -> str:
     """Read a 2D technical drawing — **.DXF, .DWG, a native .SLDDRW, or a VECTOR .PDF** — and either BUILD the part
     from it or hand you the evidence to build it yourself. This is the drawing→part front end: start
     here for ANY "build the part from this drawing" job. A .DWG or .SLDDRW is opened in SolidWorks and
@@ -231,6 +232,9 @@ def analyze_drawing(file_path: str, save_analysis: bool = True,
     accept_defaults=true only when the user said to use the defaults (an unmatched bend is then left
     unbuilt, as a declared gap). Every build prints an ASSUMPTIONS LEDGER of the values that did not come
     straight off the drawing.
+
+    background=True (with mode='build'): start the build as a job and return a job id at once — for builds
+    that may outlast a chat call; poll job_status.
 
     mode='ir'    — the lowered Feature Graph IR, without building. For inspection or saving.
     mode='build' — lower and BUILD, through the same deterministic pycompiler as
@@ -345,6 +349,9 @@ def analyze_drawing(file_path: str, save_analysis: bool = True,
     save_analysis (default True): also write `<name>.analysis-v<version>.json` beside the source —
         a research artifact for cross-part study, versioned by the analyzer. Same version
         overwrites. You never need to read it back: this answer already carries everything in it."""
+    if background and mode == "build":
+        return jobs.launch("analyze_drawing", lambda: analyze_drawing(
+            file_path, save_analysis, mode, layout, page, scale, pen_mm, answers, accept_defaults, False))
     src = os.path.abspath(file_path)
     if not os.path.exists(src):
         return f"FAILED | FILE_NOT_FOUND | {src}"

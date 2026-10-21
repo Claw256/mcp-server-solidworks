@@ -25,6 +25,8 @@ READ_ONLY = frozenset({
 DESTRUCTIVE = frozenset({"close_document", "edit_feature"})
 # Mutating tools that are safe to repeat with the same arguments.
 IDEMPOTENT = frozenset({"ensure_ready", "activate_document", "set_part_material", "save_document"})
+# job_status only reads progress (cancel=True is a request, and still never deletes geometry).
+READ_ONLY = READ_ONLY | {"job_status"}
 
 
 def annotate(mcp) -> None:

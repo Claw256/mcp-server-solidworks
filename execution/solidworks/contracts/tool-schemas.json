@@ -406,7 +406,8 @@
     "layout": "string (optional, default '' = every DXF layout merged; a layout NAME reads that sheet alone - sheet.layouts lists the names and entity counts)",
     "answers": "string (optional, JSON object {question_id: value}) - answers to the OPEN QUESTIONS the previous analyze_drawing returned, e.g. {\"bend_1\":\"l:5\",\"thickness\":\"2.0\"}; applied to a copy of the artifact, which is then re-gated",
     "accept_defaults": "boolean (optional, default false) - build despite open BLOCKING questions by taking each default (an unmatched bend note is left unbuilt as a declared gap); mode=ir|build otherwise returns NEEDS_INPUT and builds nothing",
-    "mode": "string enum (optional, default 'auto') - 'auto': the gate picks DIRECT_BUILDABLE (a short plain-text summary of an already-lowered flat pattern) or 'NOT_DIRECT | <reason>' followed by the WHOLE analysis; 'ir': the lowered Feature Graph IR without building; 'build': lower AND build through pycompiler (opens a new part, bumps state_version). ONE FORMAT since 2026-09-07: the first-turn SUMMARY and the per-view PULL (`view='v0'`) were retired together with 'full' because, once the wire form landed, the complete artifact measured SMALLER on all 10 samples than a summary plus the pulls it forced (f-3: 14.0 KB against 28.7)."
+    "mode": "string enum (optional, default 'auto') - 'auto': the gate picks DIRECT_BUILDABLE (a short plain-text summary of an already-lowered flat pattern) or 'NOT_DIRECT | <reason>' followed by the WHOLE analysis; 'ir': the lowered Feature Graph IR without building; 'build': lower AND build through pycompiler (opens a new part, bumps state_version). ONE FORMAT since 2026-09-07: the first-turn SUMMARY and the per-view PULL (`view='v0'`) were retired together with 'full' because, once the wire form landed, the complete artifact measured SMALLER on all 10 samples than a summary plus the pulls it forced (f-3: 14.0 KB against 28.7).",
+    "background": "boolean (optional, default false) - start the build as a background job and return a job_id at once (poll job_status); for builds that may outlast a chat call. One job at a time; other CAD calls are refused while it runs (only with mode='build')"
    }
   },
   "output": "string: mode='auto' -> either a DIRECT_BUILDABLE plain-text summary or 'NOT_DIRECT | <reason>' + the whole analysis JSON {analysis_version, source, config, sheet (incl. not_read), frame, views[] (each with geometry{lines as {class: [[index,x1,y1,x2,y2],...]}, arcs, circles, ellipses?}, loops[], open_chains[] (multi-segment), open_singles[]?), alignment[], view_graph?, dimensions[], bend_notes[], notes[], frame_notes[], user_description}; mode='ir' -> a Feature Graph IR JSON; mode='build' -> the compile/build result. JSON is serialized without whitespace padding (separators ',' ':')."
@@ -596,7 +597,8 @@
    "state_version": "n/a at this level — the adapter resyncs its local state_version from GET /state after the run",
    "params": {
     "artifact_path": "string (required — absolute path of the <file>.analysis.json artifact whose ir.graph to rebuild)",
-    "fresh_document": "boolean (optional, default true — open a NEW blank part before the rebuild; the normal round-trip flow)"
+    "fresh_document": "boolean (optional, default true — open a NEW blank part before the rebuild; the normal round-trip flow)",
+    "background": "boolean (optional, default false) - start the build as a background job and return a job_id at once (poll job_status); for builds that may outlast a chat call. One job at a time; other CAD calls are refused while it runs"
    }
   },
   "output": "The compiler's per-node summary string: COMPLETED n/n nodes (+ artifact name, + source_stale flag when the source file changed since analysis) or FAILED with the feature-level error and how far it got (partial geometry may remain — CAD ops are not transactional)."
@@ -608,7 +610,8 @@
    "state_version": "n/a at this level — the adapter resyncs its local state_version from GET /state after the run",
    "params": {
     "graph": "string (required — JSON Feature Graph IR per cad-planner/contracts/feature-graph.schema.json; lengths in METERS, angles in RADIANS)",
-    "fresh_document": "boolean (optional, default true — open a new blank document first: part graphs a part, assembly graphs an assembly; false = build into the current active document)"
+    "fresh_document": "boolean (optional, default true — open a new blank document first: part graphs a part, assembly graphs an assembly; false = build into the current active document)",
+    "background": "boolean (optional, default false) - start the build as a background job and return a job_id at once (poll job_status); for builds that may outlast a chat call. One job at a time; other CAD calls are refused while it runs"
    }
   },
   "output": "Per-node report string: COMPLETED (nodes built) or FAILED (feature-level error + how far it got). Partial geometry may remain on failure (CAD ops are not transactional). Not itself in the state_version/idempotency envelope; its sub-ops are."
@@ -783,9 +786,23 @@
    "state_version": "n/a - adapter-only",
    "params": {
     "run_id": "string (optional, default '' = list the most recent runs) - the id printed as run_id=... by a build",
-    "fresh_document": "boolean (optional, default true) - open a new blank document first, as the original build did"
+    "fresh_document": "boolean (optional, default true) - open a new blank document first, as the original build did",
+    "background": "boolean (optional, default false) - start the build as a background job and return a job_id at once (poll job_status); for builds that may outlast a chat call. One job at a time; other CAD calls are refused while it runs"
    }
   },
   "output": "string: the compiler per-node summary of the replay + run_id (new) + replayed_from, or a list of recent runs, or FAILED | RUN_NOT_FOUND | ..."
+ },
+ "job_status": {
+  "description": "[ADAPTER-ONLY \u2014 no COM, no REST, no state_version] Checks (or cancels) a background build started with background=True. Waits up to wait_s (max 25) for it to finish, then answers RUNNING with progress (operations executed, last tool) or COMPLETED/FAILED/CANCELLED followed by the build's own result. cancel=True stops it before its next operation; geometry built so far remains. While a job runs every other CAD call is refused so nothing lands in the middle of the build.",
+  "input": {
+   "operation_id": "n/a - adapter-only",
+   "state_version": "n/a - adapter-only",
+   "params": {
+    "job_id": "string (optional, default '' = the most recent job) - the id from JOB_STARTED",
+    "wait_s": "number (optional, default 20, max 25) - how long to wait for completion before answering RUNNING",
+    "cancel": "boolean (optional, default false) - request cancellation before the job's next operation"
+   }
+  },
+  "output": "string: RUNNING | job_id=... | kind | elapsed | ops | last_tool ; or COMPLETED|FAILED|CANCELLED | job_id=... followed by the build result ; or FAILED | JOB_NOT_FOUND | ..."
  }
 }
