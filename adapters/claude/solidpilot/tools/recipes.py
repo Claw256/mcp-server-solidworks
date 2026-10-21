@@ -278,10 +278,13 @@ Reconstruct the machined part shown in this drawing: {file_path}
 2. Look at the drawing (attach/read it). If prepare_drawing is available, call it for legible tiles and the
    exact text layer. Take numbers from text, not from measuring pixels.
 3. Write the interpretation table (units, projection, overall size, each feature with source text|vision,
-   assumptions). Ask the user ONLY about things the drawing cannot settle.
+   assumptions). Ask the user ONLY about things the drawing cannot settle: analyze_drawing lists them as
+   OPEN QUESTIONS (ids, evidence, options, default) — put them to the user with ask_user (or in chat),
+   then pass the replies as analyze_drawing(answers=...). Never build around a doubt on your own.
 4. Build with submit_feature_graph (METERS, RADIANS).
 5. Verify with verify_against_interpretation (bbox_mm, volume_mm3, holes, cg_mm), fix once, resubmit.
-6. Finish with the ledger: verified / assumed / could not model / could not read."""
+6. Finish with the ledger: verified / assumed / could not model / could not read (analyze_drawing prints an
+   ASSUMPTIONS LEDGER of the values that were defaulted or answered by the user — carry it over)."""
 
 
 @mcp.prompt()

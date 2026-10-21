@@ -1,0 +1,110 @@
+"""analyze_drawing's clarification loop, offline: questions are raised, a build waits for them,
+answers/defaults release it, and the assumptions ledger is printed. The DXF reader returns frozen
+planner fixtures and the graph runner is stubbed, so no ezdxf parsing and no SolidWorks.
+"""
+import copy
+import json
+import os
+import sys
+import tempfile
+
+_ADAPTER_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_FIXTURES = os.path.join(os.path.dirname(os.path.dirname(_ADAPTER_DIR)), "cad-planner", "drawing", "tests", "fixtures")
+if _ADAPTER_DIR not in sys.path:
+    sys.path.insert(0, _ADAPTER_DIR)
+
+
+def _deps():
+    try:
+        import server
+        from solidpilot.tools import drawing_in
+        return server, drawing_in
+    except Exception:  # noqa: BLE001
+        return None, None
+
+
+def _run(drawing_in, fixture, **kw):
+    """-> (output, graphs_built). The reader and graph runner are replaced for the call."""
+    with open(os.path.join(_FIXTURES, fixture), encoding="utf-8") as fh:
+        art = json.load(fh)
+    built = []
+    real_read, real_run = drawing_in._draw.read, drawing_in._run_graph
+    drawing_in._draw.read = lambda *a, **k: copy.deepcopy(art)
+    drawing_in._run_graph = lambda graph, fresh_document: (built.append(graph) or ("COMPLETED 4/4", True, 9))
+    try:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
+            src = os.path.join(d, "part.dxf")
+            open(src, "w").write("0\nEOF\n")
+            return drawing_in.analyze_drawing(src, save_analysis=False, **kw), built
+    finally:
+        drawing_in._draw.read, drawing_in._run_graph = real_read, real_run
+
+
+def test_auto_mode_lists_the_open_questions_and_the_ledger():
+    server, di = _deps()
+    if server is None:
+        print("     (skipped: adapter deps / ezdxf not installed)")
+        return
+    out, built = _run(di, "ambiguous_bend.json")
+    assert "OPEN QUESTIONS (2, 1 blocking)" in out and "[bend_1] (blocking, default: skip)" in out
+    assert "l:5 = bend line l5" in out and "[k_factor] (assumption, default: 0.5)" in out
+    assert "ASSUMPTIONS LEDGER" in out and not built
+
+
+def test_build_waits_for_a_blocking_question():
+    server, di = _deps()
+    if server is None:
+        return
+    out, built = _run(di, "ambiguous_bend.json", mode="build")
+    assert out.startswith("NEEDS_INPUT | 1 blocking question(s) — nothing was built.")
+    assert built == []
+
+
+def test_skip_answer_releases_the_build_and_lands_in_the_ledger():
+    server, di = _deps()
+    if server is None:
+        return
+    out, built = _run(di, "ambiguous_bend.json", mode="build", answers='{"bend_1": "skip", "k_factor": "0.4"}')
+    assert len(built) == 1 and out.startswith("COMPLETED 4/4")
+    assert "bend DOWN at (120, 124.5) = unbuilt (gap)  [user]" in out
+    assert "k_factor = 0.4  [user]" in out
+    assert "OPEN QUESTIONS" not in out
+
+
+def test_accept_defaults_builds_and_marks_the_gap_as_defaulted():
+    server, di = _deps()
+    if server is None:
+        return
+    out, built = _run(di, "ambiguous_bend.json", mode="build", accept_defaults=True)
+    assert len(built) == 1
+    assert "[default] (accepted defaults)" in out
+
+
+def test_bad_answers_fail_loudly_and_build_nothing():
+    server, di = _deps()
+    if server is None:
+        return
+    out, built = _run(di, "ambiguous_bend.json", mode="build", answers='{"bend_1": "l:999"}')
+    assert out.startswith("FAILED | BAD_ANSWERS |") and built == []
+    out, _ = _run(di, "ambiguous_bend.json", mode="build", answers="not json")
+    assert out.startswith("FAILED | BAD_ANSWERS |")
+
+
+def test_missing_thickness_asks_then_builds_with_the_users_value():
+    server, di = _deps()
+    if server is None:
+        return
+    out, built = _run(di, "no_thickness.json", mode="build")
+    assert out.startswith("NEEDS_INPUT") and "[thickness]" in out and built == []
+    out, built = _run(di, "no_thickness.json", mode="build", answers='{"thickness": "2.0"}')
+    assert len(built) == 1 and "thickness_mm = 2.0  [user]" in out
+    # defaults cannot invent a thickness: the old refusal stands
+    out, built = _run(di, "no_thickness.json", mode="build", accept_defaults=True)
+    assert out.startswith("FAILED | NOT_DIRECTLY_BUILDABLE | thickness_unresolved") and built == []
+
+
+if __name__ == "__main__":
+    for name, fn in sorted(globals().items()):
+        if name.startswith("test_") and callable(fn):
+            fn()
+            print("ok", name)

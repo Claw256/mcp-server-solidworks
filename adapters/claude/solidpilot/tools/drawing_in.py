@@ -4,6 +4,7 @@ import sys
 from typing import Literal
 import slddrw_merge
 from solidpilot import bridge
+from solidpilot import clarify
 from solidpilot.app import mcp
 from solidpilot.paths import CAD_PLANNER_DIR
 from solidpilot.tools.graph import _run_graph
@@ -194,7 +195,8 @@ def _wire_json(obj) -> str:
 @mcp.tool(structured_output=False)
 def analyze_drawing(file_path: str, save_analysis: bool = True,
                     mode: Literal["auto", "ir", "build"] = "auto", layout: str = "",
-                    page: int = 1, scale: str = "", pen_mm: float = 0.0) -> str:
+                    page: int = 1, scale: str = "", pen_mm: float = 0.0,
+                    answers: str = "", accept_defaults: bool = False) -> str:
     """Read a 2D technical drawing — **.DXF, .DWG, a native .SLDDRW, or a VECTOR .PDF** — and either BUILD the part
     from it or hand you the evidence to build it yourself. This is the drawing→part front end: start
     here for ANY "build the part from this drawing" job. A .DWG or .SLDDRW is opened in SolidWorks and
@@ -220,6 +222,14 @@ def analyze_drawing(file_path: str, save_analysis: bool = True,
         left open. You get sheet/frame, every view complete (boxes, size, geometry, loops with
         their `seq`, open chains), alignment, view_graph, every dimension, bend note and note, in
         one answer. Read it per get_recipe('reverse') and build with submit_feature_graph.
+
+    OPEN QUESTIONS — where the drawing leaves a decision to a person (a bend note that matches two lines,
+    a missing or conflicting thickness) the answer ends with an `OPEN QUESTIONS` block: ids, evidence,
+    options and a default. `mode='ir'|'build'` then returns `NEEDS_INPUT` instead of building around the
+    doubt. Ask the user (`ask_user`, or in chat), then re-call with answers='{"bend_1":"l:5"}'. Pass
+    accept_defaults=true only when the user said to use the defaults (an unmatched bend is then left
+    unbuilt, as a declared gap). Every build prints an ASSUMPTIONS LEDGER of the values that did not come
+    straight off the drawing.
 
     mode='ir'    — the lowered Feature Graph IR, without building. For inspection or saving.
     mode='build' — lower and BUILD, through the same deterministic pycompiler as
@@ -441,6 +451,31 @@ def analyze_drawing(file_path: str, save_analysis: bool = True,
         return (f"NOT_DIRECT | GATE_ERROR | {type(exc).__name__}: {exc}\n"
                 f"{traceback.format_exc(limit=4)}\n{full}")
 
+    # Open decisions: turn them into questions, apply any answers, and re-gate on the answered artifact.
+    answers_d, answers_err = clarify.parse_answers(answers)
+    if answers_err:
+        return f"FAILED | BAD_ANSWERS | {answers_err}"
+    applied: list = []
+    if answers_d:
+        try:
+            art, cfg, applied, bad = _draw.apply_answers(art, cfg, answers_d)
+        except Exception as exc:                  # noqa: BLE001
+            return f"FAILED | BAD_ANSWERS | {type(exc).__name__}: {exc}"
+        if bad:
+            return "FAILED | BAD_ANSWERS | " + "; ".join(bad)
+        verdict = _draw.assess(art, cfg)
+    questions = _draw.build_questions(art, verdict, cfg)
+    clarify.remember(src, questions)
+    qblock = clarify.render(questions, src)
+    qtail = ("\n" + qblock) if qblock else ""
+    ledger_block = ""
+    if verdict["direct"]:
+        ledger_block = clarify.render_ledger(_draw.build_ledger(art, verdict, cfg, applied, accept_defaults))
+    blocking = [q for q in questions if q["blocking"]]
+    if mode in ("ir", "build") and blocking and not accept_defaults:
+        return (f"NEEDS_INPUT | {len(blocking)} blocking question(s) — nothing was built.\n"
+                f"{qblock}")
+
     if not verdict["direct"]:
         if mode in ("ir", "build"):
             return (f"FAILED | NOT_DIRECTLY_BUILDABLE | {verdict['reason']} | {verdict['detail']} — "
@@ -451,7 +486,7 @@ def analyze_drawing(file_path: str, save_analysis: bool = True,
         # the summary plus the pulls it made necessary (f-3: 14.0 KB against 28.7).
         return (f"NOT_DIRECT | {verdict['reason']} | {verdict['detail']}\n"
                 f"The whole analysis is below. Read it per get_recipe(section='reverse') and build "
-                f"with submit_feature_graph.{_advisories(art)}\n{full}")
+                f"with submit_feature_graph.{_advisories(art)}{qtail}\n{full}")
 
     try:
         graph = _draw.lower_flat_pattern(art, cfg, verdict)
@@ -466,7 +501,8 @@ def analyze_drawing(file_path: str, save_analysis: bool = True,
         # The direct path reports its own skipped bends; the advisories add what the READ raised
         # (unread entities, a walked boundary, a mismatched dimension) — equally true when the
         # drawing turned out to be buildable without you.
-        return _summarise_direct(art, verdict["summary"], graph) + _advisories(art)
+        return (_summarise_direct(art, verdict["summary"], graph) + _advisories(art)
+                + (("\n" + ledger_block) if ledger_block else "") + qtail)
 
     # mode == "build": the THIRD IR door — same _run_graph, same pycompiler (IR-ADR-005).
     s = verdict["summary"]
@@ -484,6 +520,8 @@ def analyze_drawing(file_path: str, save_analysis: bool = True,
         tail.append("NOT BUILT: %s bend at %s (%s). The blank volume is unchanged by it, so no "
                     "measurement will catch it — add it or declare it (R15)."
                     % (r["dir"], r["at"], r["reason"]))
+    if ledger_block:
+        tail += ["", ledger_block]
     return text + "\n".join(tail)
 
 

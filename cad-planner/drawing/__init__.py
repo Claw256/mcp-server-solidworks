@@ -15,6 +15,7 @@ Modules:
   viewgraph  -- frame plausibility, graded alignment, the axis solver. Pure, no dependency.
   pairing    -- bend annotation -> bend line. Pure, no dependency.
   lowering   -- the direct-buildable gate + flat-pattern -> IR transcription. Pure, no dependency.
+  questions  -- open decisions as typed questions, answer application, assumptions ledger. Pure.
   wire       -- the single boundary between the record shape the pipeline works in and the compact
                 shape the model and the saved artifact carry. Pure. `encode`/`decode` are exact
                 inverses, so nothing above this line has to know the payload got smaller.
@@ -29,9 +30,10 @@ imports it EAGERLY at startup, never lazily inside a tool. See logs.md ADR-062.
 from .contour import chain_view, loop_member_segments
 from .pairing import pair_bend_notes
 from .lowering import assess, lower_flat_pattern
+from .questions import build_questions, apply_answers, build_ledger
 from .wire import decode as wire_decode, encode as wire_encode
 from .dxf_read import ANALYSIS_VERSION, load_config, read
 from .pdf_read import read_pdf   # PyMuPDF/ezdxf are imported lazily INSIDE it, never at startup
 
 __all__ = ["read", "load_config", "ANALYSIS_VERSION", "chain_view", "loop_member_segments",
-           "pair_bend_notes", "assess", "lower_flat_pattern", "wire_encode", "wire_decode", "read_pdf"]
+           "pair_bend_notes", "assess", "lower_flat_pattern", "build_questions", "apply_answers", "build_ledger", "wire_encode", "wire_decode", "read_pdf"]

@@ -404,6 +404,8 @@
     "pen_mm": "number (optional, PDF only, default 0 = every pen) - keep only primitives stroked with this width (mm) as part geometry; sheet.pdf.pens lists the pens and pen_suggested_mm the arc-richest one",
     "scale": "string (optional, PDF only - drawing scale like '1:2' (paper:true); overrides the title-block text; default '' = read it from the page, else ASSUME 1:1 and say so)",
     "layout": "string (optional, default '' = every DXF layout merged; a layout NAME reads that sheet alone - sheet.layouts lists the names and entity counts)",
+    "answers": "string (optional, JSON object {question_id: value}) - answers to the OPEN QUESTIONS the previous analyze_drawing returned, e.g. {\"bend_1\":\"l:5\",\"thickness\":\"2.0\"}; applied to a copy of the artifact, which is then re-gated",
+    "accept_defaults": "boolean (optional, default false) - build despite open BLOCKING questions by taking each default (an unmatched bend note is left unbuilt as a declared gap); mode=ir|build otherwise returns NEEDS_INPUT and builds nothing",
     "mode": "string enum (optional, default 'auto') - 'auto': the gate picks DIRECT_BUILDABLE (a short plain-text summary of an already-lowered flat pattern) or 'NOT_DIRECT | <reason>' followed by the WHOLE analysis; 'ir': the lowered Feature Graph IR without building; 'build': lower AND build through pycompiler (opens a new part, bumps state_version). ONE FORMAT since 2026-09-07: the first-turn SUMMARY and the per-view PULL (`view='v0'`) were retired together with 'full' because, once the wire form landed, the complete artifact measured SMALLER on all 10 samples than a summary plus the pulls it forced (f-3: 14.0 KB against 28.7)."
    }
   },
@@ -762,5 +764,16 @@
    }
   },
   "output": "-> see execution-response.json - Features = [file name, 'body_name=<source body name>' when available]"
+ },
+ "ask_user": {
+  "description": "[ADAPTER-ONLY — no COM, no REST, no state_version] Puts the OPEN QUESTIONS from the last analyze_drawing (a bend note that matches two lines, a missing or conflicting thickness, assumed values) to the user. With a client that supports MCP elicitation the user gets a form per question; otherwise it returns the questions for the model to ask in chat. Returns ANSWERS | {json}, NEEDS_CHAT | ... or DECLINED | ...; the answers go back to analyze_drawing(answers=...).",
+  "input": {
+   "operation_id": "n/a - adapter-only",
+   "state_version": "n/a - adapter-only",
+   "params": {
+    "question_ids": "string (optional, default '' = every open question) - comma-separated question ids from the OPEN QUESTIONS block"
+   }
+  },
+  "output": "string: ANSWERS | {\"<id>\": \"<value>\"} when the user answered; NEEDS_CHAT | <rendered questions> when the client cannot show forms; DECLINED | ... when the user declined; NO_OPEN_QUESTIONS | ... when nothing is pending"
  }
 }
