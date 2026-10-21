@@ -15,6 +15,17 @@ namespace SolidworksExecution.Controllers
         private readonly SolidWorksService _service;
         private readonly IOperationGuard _guard;
 
+        // Upper bound on one tool call. SOLIDPILOT_TOOL_TIMEOUT_S overrides (seconds).
+        private static readonly TimeSpan ToolTimeout = ReadTimeout();
+
+        private static TimeSpan ReadTimeout()
+        {
+            double s;
+            if (double.TryParse(Environment.GetEnvironmentVariable("SOLIDPILOT_TOOL_TIMEOUT_S"), out s) && s > 0)
+                return TimeSpan.FromSeconds(s);
+            return TimeSpan.FromMinutes(15);
+        }
+
         public ToolController() : this(OperationGuard.Instance) { }
 
         public ToolController(IOperationGuard guard)
@@ -115,7 +126,17 @@ namespace SolidworksExecution.Controllers
             {
                 // All COM-touching work runs on the single dedicated STA thread (P0.1) — OWIN request
                 // threads are MTA, which made sheet-metal calls return null and add_edge_feature deadlock.
-                response = StaExecutor.Instance.Run(() => Dispatch(request));
+                response = StaExecutor.Instance.Run(() => ToolPipeline.Run(request, _service, _guard), ToolTimeout);
+            }
+            catch (TimeoutException)
+            {
+                // The STA worker is still inside this tool: COM cannot be interrupted. Say so plainly
+                // so the caller checks state instead of blindly re-running a half-finished operation.
+                ExecLog.Write($"<- {request.Tool} TOOL_TIMEOUT after {ToolTimeout.TotalSeconds:0}s");
+                return Request.CreateResponse(HttpStatusCode.OK, ResponseBuilder.Failed(
+                    request.OperationId, _guard.GetCurrentStateVersion(), ErrorCodes.ToolTimeout,
+                    $"{request.Tool} did not finish within {ToolTimeout.TotalSeconds:0}s and may still be running inside SolidWorks. " +
+                    "Do not re-run it blindly: call verify_state, check for a modal dialog in SolidWorks, then continue."));
             }
             catch (System.Exception ex)
             {
@@ -137,57 +158,6 @@ namespace SolidworksExecution.Controllers
                 ExecLog.Write($"<- {request.Tool} {response.Status} sv={response.StateVersion}");
 
             return Request.CreateResponse(HttpStatusCode.OK, response);
-        }
-
-        // Routes a tool request to its service method. Runs on the STA thread (see Execute).
-        // Returns null for an unknown tool so the caller can emit the BadRequest response.
-        private ExecutionResponse Dispatch(ToolRequest request)
-        {
-            switch (request.Tool)
-            {
-                case "open_new_part":          return _service.OpenNewPart(request);
-                case "open_document":          return _service.OpenDocument(request);
-                case "create_sketch":          return _service.CreateSketch(request);
-                case "add_sketch_entity":      return _service.AddSketchEntity(request);
-                case "add_sketch_entities":    return _service.AddSketchEntities(request);
-                case "add_dimension":          return _service.AddDimension(request);
-                case "add_sketch_constraint":  return _service.AddSketchConstraint(request);
-                case "add_edge_feature":       return _service.AddEdgeFeature(request);
-                case "create_rib":             return _service.CreateRib(request);
-                case "hole_wizard":            return _service.HoleWizard(request);
-                case "create_drawing":         return _service.CreateDrawing(request);
-                case "add_drawing_view":       return _service.AddDrawingView(request);
-                case "add_flat_pattern_view":  return _service.AddFlatPatternView(request);
-                case "add_drawing_dimension":  return _service.AddDrawingDimension(request);
-                case "auto_dimension_drawing": return _service.AutoDimensionDrawing(request);
-                case "auto_center_marks":      return _service.AutoCenterMarks(request);
-                case "add_hole_callout":       return _service.AddHoleCallout(request);
-                case "add_section_view":       return _service.AddSectionView(request);
-                case "save_document":          return _service.SaveDocument(request);
-                case "export_document":        return _service.ExportDocument(request);
-                case "export_image":           return _service.ExportImage(request);
-                case "batch_export":           return _service.BatchExport(request);
-                case "extrude_feature":        return _service.ExtrudeFeature(request);
-                case "verify_state":           return _service.VerifyState(request);
-                case "close_document":         return _service.CloseDocument(request);
-                case "analyze_model":          return _service.AnalyzeModel(request);
-                case "analyze_slddrw_test":    return _service.AnalyzeDrawing(request);
-                case "get_selection":          return _service.GetSelection(request);
-                case "edit_sketch":            return _service.EditSketch(request);
-                case "add_reference_geometry": return _service.AddReferenceGeometry(request);
-                case "create_pattern":         return _service.CreatePattern(request);
-                case "set_part_material":      return _service.SetPartMaterial(request);
-                case "sheet_metal_feature":    return _service.SheetMetalFeature(request);
-                case "modify_dimension":       return _service.ModifyDimension(request);
-                case "edit_feature":           return _service.EditFeature(request);
-                case "activate_document":      return _service.ActivateDocument(request);
-                case "analyze_assembly":       return _service.AnalyzeAssembly(request);
-                case "open_new_assembly":      return _service.OpenNewAssembly(request);
-                case "insert_component":       return _service.InsertComponent(request);
-                case "add_mate":               return _service.AddMateTool(request);
-                case "save_body_as_part":      return _service.SaveBodyAsPart(request);
-                default:                       return null;
-            }
         }
     }
 }

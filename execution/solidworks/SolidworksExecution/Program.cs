@@ -15,6 +15,15 @@ namespace SolidworksExecution
         // SolidWorks COM requires an STA thread. We host OWIN from a dedicated STA thread.
         static void Main(string[] args)
         {
+            // `--list-tools` prints the registered tool names (one JSON array) and exits; the Python
+            // contract test diffs this against tool-schemas.json so the two cannot drift.
+            if (args.Length > 0 && args[0] == "--list-tools")
+            {
+                Console.WriteLine("[" + string.Join(",", System.Linq.Enumerable.Select(
+                    ToolRegistry.Names, n => "\"" + n + "\"")) + "]");
+                return;
+            }
+
             // Graceful Ctrl+C when run interactively; headless runs stay up until the
             // process is killed.
             Console.CancelKeyPress += (s, e) => { e.Cancel = true; _shutdown.Set(); };

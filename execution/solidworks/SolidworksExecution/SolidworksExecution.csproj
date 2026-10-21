@@ -86,7 +86,11 @@
     <Compile Include="Infrastructure\ExecLog.cs" />
     <Compile Include="Infrastructure\IOperationGuard.cs" />
     <Compile Include="Infrastructure\OperationGuard.cs" />
+    <Compile Include="Infrastructure\ResponseBuilder.cs" />
     <Compile Include="Infrastructure\StaExecutor.cs" />
+    <Compile Include="Infrastructure\ToolAttribute.cs" />
+    <Compile Include="Infrastructure\ToolPipeline.cs" />
+    <Compile Include="Infrastructure\ToolRegistry.cs" />
     <Compile Include="Models\CadState.cs" />
     <Compile Include="Models\ExecutionResponse.cs" />
     <Compile Include="Models\ToolRequest.cs" />

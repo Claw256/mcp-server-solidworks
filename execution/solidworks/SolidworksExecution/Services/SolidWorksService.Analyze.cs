@@ -17,6 +17,7 @@ namespace SolidworksExecution.Services
         // -----------------------------------------------------------------------
         // M16 — analyze_model
         // -----------------------------------------------------------------------
+        [Tool("analyze_model")]
         public ExecutionResponse AnalyzeModel(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -349,6 +350,7 @@ namespace SolidworksExecution.Services
         // AI acts on it (face → create_sketch(on_face, face_index); edge → add_edge_feature(edge_indices)).
         // Read-only: does NOT clear the selection (would wipe the user's pick) and does NOT bump
         // state_version (same pattern as AnalyzeModel/VerifyState). Baby reference-resolver → feeds P1.3.
+        [Tool("get_selection")]
         public ExecutionResponse GetSelection(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))

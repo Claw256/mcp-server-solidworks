@@ -167,6 +167,49 @@ def find_drawing_api_drift():
     return errors
 
 
+# Tools that exist ONLY in the adapter (no C# handler). Adding to this set is a deliberate decision.
+ADAPTER_ONLY_TOOLS = {
+    "analyze_drawing", "annotate_regions", "compare_assemblies", "compare_parts", "ensure_ready",
+    "get_recipe", "prepare_drawing", "rebuild_from_ir", "save_analysis", "submit_feature_graph",
+    "verify_against_interpretation",
+}
+
+
+def _csharp_tools():
+    """Tool names declared with [Tool("...")] on the C# service (source scan: no build needed)."""
+    root = os.path.join(_REPO_ROOT, "execution", "solidworks", "SolidworksExecution", "Services")
+    names = set()
+    for fn in os.listdir(root):
+        if fn.endswith(".cs"):
+            with open(os.path.join(root, fn), encoding="utf-8-sig") as fh:
+                names |= set(re.findall(r'\[Tool\("(\w+)"', fh.read()))
+    return names
+
+
+def find_csharp_drift():
+    """The C# registry, the adapter and tool-schemas.json must describe the same tool set."""
+    cs, adapter, contract = _csharp_tools(), set(_adapter_tools()), set(_contract_tools())
+    errors = []
+    if not cs:
+        return ["no [Tool(...)] attributes found in the C# services — registry scan is broken"]
+    for name in sorted(cs - adapter):
+        errors.append(f"C# tool '{name}' has no adapter tool in server.py")
+    for name in sorted(cs - contract):
+        errors.append(f"C# tool '{name}' is missing from tool-schemas.json")
+    unexpected = sorted((adapter - cs) - ADAPTER_ONLY_TOOLS)
+    for name in unexpected:
+        errors.append(f"adapter tool '{name}' has no C# handler and is not in ADAPTER_ONLY_TOOLS")
+    for name in sorted(ADAPTER_ONLY_TOOLS & cs):
+        errors.append(f"'{name}' is listed ADAPTER_ONLY_TOOLS but a C# handler exists")
+    return errors
+
+
+def test_csharp_registry_in_sync():
+    """pytest entry point: C# [Tool] registry vs adapter vs contract."""
+    errors = find_csharp_drift()
+    assert not errors, "C#/adapter/contract drift detected:\n  - " + "\n  - ".join(errors)
+
+
 def test_schema_contract_in_sync():
     """pytest entry point."""
     errors = find_drift()

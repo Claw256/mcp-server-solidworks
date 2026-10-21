@@ -43,7 +43,14 @@ namespace SolidworksExecution.Infrastructure
         }
 
         /// <summary>Marshal <paramref name="func"/> onto the STA thread and block until it returns.</summary>
-        public T Run<T>(Func<T> func)
+        public T Run<T>(Func<T> func) { return Run(func, Timeout.InfiniteTimeSpan); }
+
+        /// <summary>
+        /// As <see cref="Run{T}(Func{T})"/>, but gives up waiting after <paramref name="timeout"/> and throws
+        /// <see cref="TimeoutException"/>. The job itself cannot be cancelled (COM): it keeps the worker
+        /// busy until it returns, and later jobs queue behind it.
+        /// </summary>
+        public T Run<T>(Func<T> func, TimeSpan timeout)
         {
             T result = default(T);
             Exception captured = null;
@@ -55,7 +62,8 @@ namespace SolidworksExecution.Infrastructure
                     catch (Exception ex) { captured = ex; }
                     finally { done.Set(); }
                 });
-                done.Wait();
+                if (!done.Wait(timeout))
+                    throw new TimeoutException("STA job exceeded " + timeout);
             }
             if (captured != null)
                 throw new InvalidOperationException("STA execution failed: " + captured.Message, captured);

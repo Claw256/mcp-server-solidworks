@@ -14,6 +14,7 @@ namespace SolidworksExecution.Services
     public partial class SolidWorksService
     {
 
+        [Tool("extrude_feature")]
         public ExecutionResponse ExtrudeFeature(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -349,6 +350,7 @@ namespace SolidworksExecution.Services
             }
         }
 
+        [Tool("create_rib")]
         public ExecutionResponse CreateRib(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -462,6 +464,7 @@ namespace SolidworksExecution.Services
             }
         }
 
+        [Tool("add_edge_feature")]
         public ExecutionResponse AddEdgeFeature(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -680,6 +683,7 @@ namespace SolidworksExecution.Services
         // -----------------------------------------------------------------------
         // M19 — add_reference_geometry
         // -----------------------------------------------------------------------
+        [Tool("add_reference_geometry")]
         public ExecutionResponse AddReferenceGeometry(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -854,6 +858,7 @@ namespace SolidworksExecution.Services
         // -----------------------------------------------------------------------
         // M20 — create_pattern
         // -----------------------------------------------------------------------
+        [Tool("create_pattern")]
         public ExecutionResponse CreatePattern(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -1105,6 +1110,7 @@ namespace SolidworksExecution.Services
         // -----------------------------------------------------------------------
         // M21 — set_part_material
         // -----------------------------------------------------------------------
+        [Tool("set_part_material")]
         public ExecutionResponse SetPartMaterial(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -1195,6 +1201,7 @@ namespace SolidworksExecution.Services
         // changes — unlike analyze). Flow: analyze_model(features) reports every feature's dimension
         // full-names + SI values → pick a name → modify_dimension(name, value).
         // -----------------------------------------------------------------------
+        [Tool("modify_dimension")]
         public ExecutionResponse ModifyDimension(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
@@ -1299,6 +1306,7 @@ namespace SolidworksExecution.Services
         // bumps state_version. RESOLVER PROBE (P1.3): suppress/delete CHANGE topology, so selectors or
         // coordinates captured earlier may no longer resolve — re-query with analyze_model afterwards.
         // -----------------------------------------------------------------------
+        [Tool("edit_feature")]
         public ExecutionResponse EditFeature(ToolRequest request)
         {
             if (_guard.IsDuplicate(request.OperationId))
