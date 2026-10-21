@@ -31,7 +31,8 @@ namespace SolidworksExecution.Infrastructure
             {
                 lock (_lock)
                 {
-                    Rotate();
+                    try { Rotate(); }
+                    catch { /* a locked old log must not cost us the new line */ }
                     File.AppendAllText(FilePath,
                         DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff") + "  " + message + Environment.NewLine);
                 }

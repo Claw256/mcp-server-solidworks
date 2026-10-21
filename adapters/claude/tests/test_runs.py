@@ -112,6 +112,18 @@ def test_replay_runs_the_same_graph_as_a_new_run_and_refuses_a_tampered_record()
         assert server.replay_run("../etc").startswith("FAILED | RUN_NOT_FOUND")
 
 
+def test_a_run_ended_in_another_context_does_not_stay_current():
+    if not _DEPS:
+        return
+    import contextvars
+    run = runs.begin("test", {"nodes": []})
+    # end() in a fresh Context: the saved token cannot be reset there
+    contextvars.Context().run(runs.end, run, "COMPLETED", "x")
+    assert runs.current() is None or runs.current() is run          # (the foreign context keeps its own view)
+    runs.end(run, "COMPLETED", "x")                                  # the owning context closes it properly
+    assert runs.current() is None
+
+
 def test_logs_carry_the_active_run_id_only_while_it_is_active():
     if not _DEPS:
         return

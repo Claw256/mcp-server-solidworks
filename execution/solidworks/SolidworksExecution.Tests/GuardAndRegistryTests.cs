@@ -109,10 +109,49 @@ namespace SolidworksExecution.Tests
         }
 
         [Fact]
+        public void A_job_abandoned_by_a_timeout_before_it_started_never_runs_later()
+        {
+            var sta = StaExecutor.Instance;
+            bool ranLater = false;
+            var blocker = System.Threading.Tasks.Task.Run(() => sta.Run(() => { System.Threading.Thread.Sleep(500); return 1; }));
+            System.Threading.Thread.Sleep(100);                       // let the blocker occupy the worker
+            var ex = Assert.Throws<ToolTimeoutException>(() =>
+                sta.Run(() => { ranLater = true; return 2; }, System.TimeSpan.FromMilliseconds(50)));
+            Assert.False(ex.Started);                                // it never began
+            blocker.Wait();
+            System.Threading.Thread.Sleep(200);                      // the worker is free now: the abandoned job must stay dead
+            Assert.False(ranLater);
+            Assert.Equal(3, sta.Run(() => 3, System.TimeSpan.FromSeconds(5)));   // and the worker is healthy
+        }
+
+        [Fact]
+        public void A_timeout_on_a_running_job_reports_started_and_the_worker_survives_its_late_finish()
+        {
+            var sta = StaExecutor.Instance;
+            var ex = Assert.Throws<ToolTimeoutException>(() =>
+                sta.Run(() => { System.Threading.Thread.Sleep(300); return 1; }, System.TimeSpan.FromMilliseconds(50)));
+            Assert.True(ex.Started);
+            System.Threading.Thread.Sleep(400);                      // its late Set() must not have broken the worker
+            Assert.Equal(4, sta.Run(() => 4, System.TimeSpan.FromSeconds(5)));
+        }
+
+        [Fact]
+        public void The_same_operation_id_cannot_be_in_flight_twice()
+        {
+            var id = "inflight-" + System.Guid.NewGuid();
+            Assert.True(ToolPipeline.TryBegin(id));
+            Assert.False(ToolPipeline.TryBegin(id));                 // a retry while the first is still running
+            ToolPipeline.End(id);
+            ToolPipeline.End(id);                                    // idempotent
+            Assert.True(ToolPipeline.TryBegin(id));
+            ToolPipeline.End(id);
+        }
+
+        [Fact]
         public void StaExecutor_times_out_without_hanging_the_caller()
         {
             var sta = StaExecutor.Instance;
-            Assert.Throws<System.TimeoutException>(() =>
+            Assert.ThrowsAny<System.TimeoutException>(() =>
                 sta.Run(() => { System.Threading.Thread.Sleep(600); return 1; }, System.TimeSpan.FromMilliseconds(50)));
             // the worker recovers once the slow job ends
             Assert.Equal(2, sta.Run(() => 2, System.TimeSpan.FromSeconds(5)));

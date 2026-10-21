@@ -20,8 +20,11 @@ _order: list = []            # job ids, oldest first
 _KEEP = 20                   # finished jobs remembered
 
 
-class JobCancelled(Exception):
-    """Raised inside the job's thread at the next operation after a cancel request."""
+class JobCancelled(BaseException):
+    """Raised inside the job's thread at the next operation after a cancel request.
+
+    A BaseException on purpose: the compiler and the adapter have broad `except Exception` handlers that
+    turn failures into FAILED results, and a cancel must not be absorbed by one of them and carry on building."""
 
 
 class JobBusy(Exception):

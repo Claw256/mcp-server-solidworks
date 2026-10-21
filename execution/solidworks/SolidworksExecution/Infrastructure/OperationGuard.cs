@@ -46,20 +46,25 @@ namespace SolidworksExecution.Infrastructure
             return incomingStateVersion == _currentStateVersion;
         }
 
+        private readonly object _registerLock = new object();
+
         public void RegisterCompleted(string operationId, ExecutionResponse response)
         {
-            if (_completed.TryAdd(operationId, response))
+            lock (_registerLock)       // registration + eviction as one step: two writers must not over-evict
             {
-                _order.Enqueue(operationId);
-                while (_completed.Count > MaxRemembered && _order.TryDequeue(out var oldest))
+                if (_completed.TryAdd(operationId, response))
                 {
-                    ExecutionResponse dropped;
-                    _completed.TryRemove(oldest, out dropped);
+                    _order.Enqueue(operationId);
+                    while (_completed.Count > MaxRemembered && _order.TryDequeue(out var oldest))
+                    {
+                        ExecutionResponse dropped;
+                        _completed.TryRemove(oldest, out dropped);
+                    }
                 }
-            }
-            else
-            {
-                _completed[operationId] = response;
+                else
+                {
+                    _completed[operationId] = response;     // same id again: keeps its original place in the queue
+                }
             }
             Interlocked.Increment(ref _currentStateVersion);
         }

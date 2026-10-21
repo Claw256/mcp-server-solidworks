@@ -96,7 +96,9 @@ def end(run, status, summary, compile_result=None, state_version=None, session=N
         if run._token is not None:
             _current.reset(run._token)
     except Exception:                                    # noqa: BLE001
-        pass
+        # begin() and end() ran in different contexts: the token cannot be used. A finished run must not
+        # stay current, or later unrelated calls would derive their ids from it and be logged under it.
+        _current.set(None)
     manifest = {
         "run_id": run.run_id, "kind": run.kind, "source": run.source,
         "started_utc": run.started.isoformat(), "ended_utc": datetime.now(timezone.utc).isoformat(),

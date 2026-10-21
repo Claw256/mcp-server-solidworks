@@ -84,6 +84,12 @@ def _run_graph(graph_obj, fresh_document, kind="graph", source=None):
     run = runs.begin(kind, graph_obj, source)
     try:
         text, ok, sv, compile_result = _run_graph_inner(graph_obj, fresh_document)
+    except jobs.JobCancelled:
+        # Stopped between operations: the adapter's state_version is now behind the execution layer's.
+        sv = bridge._resync_state_version()
+        runs.end(run, "CANCELLED", "cancelled by request; partial geometry may remain", state_version=sv,
+                 session=bridge.session)
+        raise
     except BaseException:
         runs.end(run, "CRASHED", "exception escaped the compiler", session=bridge.session)
         raise

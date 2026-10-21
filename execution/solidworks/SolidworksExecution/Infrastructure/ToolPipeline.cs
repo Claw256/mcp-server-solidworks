@@ -13,8 +13,24 @@ namespace SolidworksExecution.Infrastructure
     /// </summary>
     public static class ToolPipeline
     {
+        // Operation ids currently queued or running. A retry that re-sends the SAME id while the first call is
+        // still in flight (typically after a timeout) would otherwise queue behind it and build twice, because
+        // nothing is registered with the guard until the first call finishes.
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> InFlight =
+            new System.Collections.Concurrent.ConcurrentDictionary<string, byte>();
+
+        public static bool TryBegin(string operationId) { return InFlight.TryAdd(operationId, 0); }
+
+        public static void End(string operationId) { byte b; InFlight.TryRemove(operationId, out b); }
+
         /// <returns>null when the tool name is unknown (caller emits the BadRequest).</returns>
         public static ExecutionResponse Run(ToolRequest request, SolidWorksService service, IOperationGuard guard)
+        {
+            try { return RunCore(request, service, guard); }
+            finally { End(request.OperationId); }       // idempotent: also covers ids the controller registered
+        }
+
+        private static ExecutionResponse RunCore(ToolRequest request, SolidWorksService service, IOperationGuard guard)
         {
             ToolEntry entry;
             if (!ToolRegistry.TryGet(request.Tool, out entry))

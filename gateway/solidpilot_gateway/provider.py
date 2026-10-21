@@ -34,6 +34,9 @@ CODE_TTL = 300
 PENDING_TTL = 600
 CLIENT_TTL = 60 * 60 * 24 * 180   # bound DCR growth; Claude re-registers after an invalid_client
 LOCK_AFTER = 5
+# Per-address lockout stops one source; this stops guessing spread over many (or spoofed) addresses. High on
+# purpose: tripping it locks the real agent out too, so only a flood does.
+GLOBAL_AGENT_LOCK_AFTER = 100
 
 
 class OwnerProvider(OAuthAuthorizationServerProvider[AuthorizationCode, RefreshToken, AccessToken]):
@@ -51,7 +54,9 @@ class OwnerProvider(OAuthAuthorizationServerProvider[AuthorizationCode, RefreshT
         return await self.store.is_locked("login")
 
     async def agent_locked(self, ip: str = "") -> bool:
-        return await self.store.is_locked(f"agent:{ip}" if ip else "agent")
+        if await self.store.is_locked("agent"):
+            return True
+        return bool(ip) and await self.store.is_locked(f"agent:{ip}")
 
     # ----- dynamic client registration -------------------------------------------------------
     def _redirect_allowed(self, uri: str) -> bool:
@@ -195,6 +200,8 @@ class OwnerProvider(OAuthAuthorizationServerProvider[AuthorizationCode, RefreshT
             await self.store.clear(f"fail:{scope}")
             return True
         await self._failed(scope)
+        if await self.store.bump("fail:agent-all", window=900) >= GLOBAL_AGENT_LOCK_AFTER:
+            await self.store.lock("agent", 900)
         return False
 
     async def issue_agent_token(self) -> OAuthToken:

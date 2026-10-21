@@ -122,17 +122,34 @@ namespace SolidworksExecution.Controllers
 
             ExecutionResponse response;
 
+            // The same operation id already queued or running (e.g. a retry after a timeout): do not run it twice.
+            if (!ToolPipeline.TryBegin(request.OperationId))
+                return Request.CreateResponse(HttpStatusCode.OK, ResponseBuilder.Failed(
+                    request.OperationId, _guard.GetCurrentStateVersion(), ErrorCodes.OperationInProgress,
+                    $"operation {request.OperationId} ({request.Tool}) is still running. Wait, then call verify_state; do not re-send it."));
+
             try
             {
                 // All COM-touching work runs on the single dedicated STA thread (P0.1) — OWIN request
                 // threads are MTA, which made sheet-metal calls return null and add_edge_feature deadlock.
                 response = StaExecutor.Instance.Run(() => ToolPipeline.Run(request, _service, _guard), ToolTimeout);
             }
-            catch (TimeoutException)
+            catch (ToolTimeoutException tex)
             {
+                if (!tex.Started)
+                {
+                    // It never began (the worker was busy) and now never will: nothing changed, safe to retry.
+                    ToolPipeline.End(request.OperationId);
+                    ExecLog.Write($"<- {request.Tool} TOOL_TIMEOUT (not started) after {ToolTimeout.TotalSeconds:0}s");
+                    return Request.CreateResponse(HttpStatusCode.OK, ResponseBuilder.Failed(
+                        request.OperationId, _guard.GetCurrentStateVersion(), ErrorCodes.ToolTimeout,
+                        $"{request.Tool} waited {ToolTimeout.TotalSeconds:0}s behind another operation and was NOT executed; nothing changed. " +
+                        "It is safe to send again once the current operation has finished."));
+                }
                 // The STA worker is still inside this tool: COM cannot be interrupted. Say so plainly
                 // so the caller checks state instead of blindly re-running a half-finished operation.
-                ExecLog.Write($"<- {request.Tool} TOOL_TIMEOUT after {ToolTimeout.TotalSeconds:0}s");
+                // The operation id stays in flight until the tool actually finishes.
+                ExecLog.Write($"<- {request.Tool} TOOL_TIMEOUT (running) after {ToolTimeout.TotalSeconds:0}s");
                 return Request.CreateResponse(HttpStatusCode.OK, ResponseBuilder.Failed(
                     request.OperationId, _guard.GetCurrentStateVersion(), ErrorCodes.ToolTimeout,
                     $"{request.Tool} did not finish within {ToolTimeout.TotalSeconds:0}s and may still be running inside SolidWorks. " +
@@ -140,6 +157,7 @@ namespace SolidworksExecution.Controllers
             }
             catch (System.Exception ex)
             {
+                ToolPipeline.End(request.OperationId);
                 ExecLog.Write($"<- {request.Tool} UNHANDLED {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
                 return Request.CreateResponse(HttpStatusCode.InternalServerError,
                     new { error = ex.Message });

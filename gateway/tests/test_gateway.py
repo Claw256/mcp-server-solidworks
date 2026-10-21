@@ -337,3 +337,16 @@ def test_a_bad_numeric_setting_names_the_variable(monkeypatch):
     with pytest.raises(SystemExit) as ei:
         Settings.from_env()
     assert "GATEWAY_CALL_TIMEOUT" in str(ei.value) and "two hundred" in str(ei.value)
+
+
+async def test_guessing_spread_over_many_addresses_still_hits_a_global_cap(gateway):
+    """Per-address lockout alone would let a spoofed X-Forwarded-For brute-force forever: a high global cap backs it up."""
+    from solidpilot_gateway.provider import GLOBAL_AGENT_LOCK_AFTER
+    url = f"{gateway.url}/agent/token"
+    form = {"grant_type": "client_credentials", "scope": "agent", "resource": f"{gateway.url}/agent"}
+    async with httpx.AsyncClient() as c:
+        for i in range(GLOBAL_AGENT_LOCK_AFTER):
+            r = await c.post(url, data=form, auth=("pc-agent", "wrong"), headers={"X-Forwarded-For": f"10.0.{i // 250}.{i % 250}"})
+            assert r.status_code == 401, (i, r.status_code)       # every address is fresh: none is locked individually
+        real = await c.post(url, data=form, auth=(AGENT_ID, AGENT_SECRET), headers={"X-Forwarded-For": "198.51.100.77"})
+        assert real.status_code == 429                            # the flood tripped the global cap

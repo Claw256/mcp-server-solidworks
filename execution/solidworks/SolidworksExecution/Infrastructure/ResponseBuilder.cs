@@ -23,6 +23,7 @@ namespace SolidworksExecution.Infrastructure
     {
         public const string InvalidStateVersion = "INVALID_STATE_VERSION";
         public const string ToolTimeout = "TOOL_TIMEOUT";
+        public const string OperationInProgress = "OPERATION_IN_PROGRESS";
         public const string UnknownTool = "UNKNOWN_TOOL";
         public const string Unexpected = "UNEXPECTED_ERROR";
     }

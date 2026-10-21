@@ -137,6 +137,48 @@ def test_submit_feature_graph_background_starts_a_job_and_the_result_arrives_via
     assert server.submit_feature_graph("not json", background=True).startswith("FAILED | INVALID_JSON")
 
 
+def test_cancel_through_the_compile_path_is_not_swallowed_and_is_recorded_as_cancelled():
+    """JobCancelled must get past the broad `except Exception` handlers and end the run as CANCELLED."""
+    if not _DEPS:
+        return
+    import tempfile
+    import ir_execution_port
+    from solidpilot import runs
+    _wait_idle()
+    started = threading.Event()
+
+    def fake_compile(graph):
+        started.set()
+        try:
+            for _ in range(500):
+                jobs.checkpoint("add_sketch_entity")           # what AdapterExecutionPort.execute does per op
+                time.sleep(0.01)
+        except Exception:                                      # a compiler-style catch-all must NOT see the cancel
+            return type("R", (), {"status": "FAILED", "summary": lambda self: "FAILED | swallowed",
+                                  "to_dict": lambda self: {}})()
+        raise AssertionError("never cancelled")
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
+        old_env = os.environ.get("SOLIDPILOT_RUNS_DIR")
+        os.environ["SOLIDPILOT_RUNS_DIR"] = d
+        real_run, real_raw, real_resync = ir_execution_port.run_feature_graph, bridge._call_raw, bridge._resync_state_version
+        ir_execution_port.run_feature_graph = fake_compile
+        bridge._call_raw = lambda tool, params: {"status": "COMPLETED"}
+        bridge._resync_state_version = lambda: 21
+        try:
+            jid = server.submit_feature_graph('{"nodes": []}', background=True).split("job_id=")[1].split()[0]
+            assert started.wait(5)
+            out = jobs.status(jid, wait_s=5, cancel=True)
+            rows = runs.recent()
+        finally:
+            ir_execution_port.run_feature_graph, bridge._call_raw, bridge._resync_state_version = real_run, real_raw, real_resync
+            if old_env is None:
+                os.environ.pop("SOLIDPILOT_RUNS_DIR", None)
+            else:
+                os.environ["SOLIDPILOT_RUNS_DIR"] = old_env
+    assert out.startswith("CANCELLED | job_id=" + jid), out
+    assert rows and rows[0]["status"] == "CANCELLED"
+
+
 def test_job_status_is_read_only_in_the_annotations():
     if not _DEPS:
         return

@@ -156,6 +156,10 @@
     "retryable": false,
     "hint": "SolidWorks could not open the file (corrupt, wrong version, or locked). Try STEP/DXF import or another copy."
   },
+  "OPERATION_IN_PROGRESS": {
+    "retryable": true,
+    "hint": "This same operation_id is still queued or running. Wait, then call verify_state; do not re-send it."
+  },
   "PATTERN_FAILED": {
     "retryable": false,
     "hint": "The pattern produced no instances; check the seed feature, spacing/angle and count."
@@ -230,7 +234,7 @@
   },
   "TOOL_TIMEOUT": {
     "retryable": false,
-    "hint": "The operation may still be running inside SolidWorks. Do NOT re-run it: call verify_state, look for a modal dialog in SolidWorks, then continue."
+    "hint": "Read the message: if it says NOT executed, nothing changed and it is safe to send again; otherwise the operation may still be running inside SolidWorks - do NOT re-run it: call verify_state, look for a modal dialog in SolidWorks, then continue."
   },
   "TRANSFORM_FAILED": {
     "retryable": false,
