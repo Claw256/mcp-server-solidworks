@@ -507,7 +507,7 @@ def analyze_drawing(file_path: str, save_analysis: bool = True,
 
     # mode == "build": the THIRD IR door — same _run_graph, same pycompiler (IR-ADR-005).
     s = verdict["summary"]
-    text, ok, sv = _run_graph(graph, fresh_document=True)
+    text, ok, sv = _run_graph(graph, fresh_document=True, kind="analyze_drawing", source=src)
     if not ok:
         return text
     try:                                          # what verify_against_interpretation checks by default

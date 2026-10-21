@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 from solidpilot import bridge
+from solidpilot import runs
 from solidpilot.app import mcp
 
 
@@ -59,7 +60,7 @@ def rebuild_from_ir(artifact_path: str, fresh_document: bool = True) -> str:
         if current != recorded:
             source_stale = " | source_stale=true (file changed since analysis — regenerate the artifact)"
 
-    text, ok, _sv = _run_graph(graph, fresh_document)
+    text, ok, _sv = _run_graph(graph, fresh_document, kind="rebuild_from_ir", source=path)
     return text + (f" | artifact={os.path.basename(path)}{source_stale}" if ok else "")
 
 
@@ -69,7 +70,26 @@ def rebuild_from_ir(artifact_path: str, fresh_document: bool = True) -> str:
 # experimental gates were deleted by IR-ADR-005. Two doors, ONE pycompiler: rebuild_from_ir
 # replays an artifact's stored graph, this tool takes a graph directly — never fork the compiler.)
 # ---------------------------------------------------------------------------
-def _run_graph(graph_obj, fresh_document):
+def _run_graph(graph_obj, fresh_document, kind="graph", source=None):
+    """Record the run (derived operation ids, manifest) around _run_graph_inner.
+
+    Returns (text, ok, state_version); on any outcome the text ends with `run_id=...` so the
+    build can be named, inspected and replayed."""
+    run = runs.begin(kind, graph_obj, source)
+    try:
+        text, ok, sv = _run_graph_inner(graph_obj, fresh_document)
+    except BaseException:
+        runs.end(run, "CRASHED", "exception escaped the compiler", session=bridge.session)
+        raise
+    runs.end(run, "COMPLETED" if ok else "FAILED", text.splitlines()[0][:300],
+             compile_result=_LAST_COMPILE.pop("result", None), state_version=sv, session=bridge.session)
+    return text + " | run_id=" + run.run_id, ok, sv
+
+
+_LAST_COMPILE: dict = {}
+
+
+def _run_graph_inner(graph_obj, fresh_document):
     """The ONE path from a Feature Graph to live geometry — shared by every IR door.
 
     IR-ADR-005 forbids FORKING the compiler, not having several doors into it. There are three
@@ -102,6 +122,7 @@ def _run_graph(graph_obj, fresh_document):
     # one run performs MANY state-bumping sub-ops outside _call() (KNOWN-LIMITATIONS #5).
     try:
         result = run_feature_graph(graph_obj)
+        _LAST_COMPILE["result"] = result.to_dict()
     except Exception as ex:  # noqa: BLE001
         sv = bridge._resync_state_version()
         return (f"FAILED | UNEXPECTED | {type(ex).__name__}: {ex} | state_version resynced to {sv}",
@@ -152,5 +173,29 @@ def submit_feature_graph(graph: str, fresh_document: bool = True) -> str:
     except Exception as ex:  # noqa: BLE001
         return f"FAILED | INVALID_JSON | the graph is not valid JSON: {ex}"
 
-    text, ok, sv = _run_graph(graph_obj, fresh_document)
+    text, ok, sv = _run_graph(graph_obj, fresh_document, kind="submit_feature_graph")
     return text + f" | state_version={sv}"      # resynced after every run, success or not
+
+
+@mcp.tool(structured_output=False)
+def replay_run(run_id: str = "", fresh_document: bool = True) -> str:
+    """Re-run a recorded build exactly: the same Feature Graph, through the same compiler, as a NEW run.
+
+    Every graph build (submit_feature_graph, rebuild_from_ir, analyze_drawing build) ends with `run_id=...`
+    and leaves a manifest holding the graph, its sha256, the environment and the per-node log. Use this to
+    reproduce a result, to retry after fixing the environment (e.g. a modal dialog), or to rebuild on a
+    fresh document. run_id='' lists the most recent runs. The manifest's graph hash is verified first; an
+    edited record is refused. CAD ops are not transactional: a replay on a non-fresh document appends.
+    fresh_document (default True) opens a new blank document first, as the original did."""
+    if not run_id.strip():
+        rows = runs.recent()
+        if not rows:
+            return "NO_RUNS | nothing has been built yet (runs are recorded in " + runs.runs_dir() + ")"
+        return "RECENT RUNS (newest first)\n" + "\n".join(
+            f"  {r['run_id']}  {r['status']:<9} {r['kind']:<20} {r['nodes']} nodes  {r['ended_utc']}"
+            + (f"  <- {r['source']}" if r.get("source") else "") for r in rows)
+    manifest, err = runs.load(run_id.strip())
+    if err:
+        return f"FAILED | RUN_NOT_FOUND | {err}"
+    text, ok, sv = _run_graph(manifest["graph"], fresh_document, kind="replay", source=manifest["run_id"])
+    return text + f" | state_version={sv} | replayed_from={manifest['run_id']}"

@@ -775,5 +775,17 @@
    }
   },
   "output": "string: ANSWERS | {\"<id>\": \"<value>\"} when the user answered; NEEDS_CHAT | <rendered questions> when the client cannot show forms; DECLINED | ... when the user declined; NO_OPEN_QUESTIONS | ... when nothing is pending"
+ },
+ "replay_run": {
+  "description": "[ADAPTER-ONLY \u2014 no COM, no REST, no state_version] Re-runs a recorded Feature Graph build exactly (same graph, same compiler) as a new run. Every graph build prints run_id=... and leaves a manifest (graph, sha256, environment, per-node log, ordered operation ids) under the runs directory; the stored graph hash is verified before replay. run_id='' lists recent runs.",
+  "input": {
+   "operation_id": "n/a - adapter-only",
+   "state_version": "n/a - adapter-only",
+   "params": {
+    "run_id": "string (optional, default '' = list the most recent runs) - the id printed as run_id=... by a build",
+    "fresh_document": "boolean (optional, default true) - open a new blank document first, as the original build did"
+   }
+  },
+  "output": "string: the compiler per-node summary of the replay + run_id (new) + replayed_from, or a list of recent runs, or FAILED | RUN_NOT_FOUND | ..."
  }
 }

@@ -30,6 +30,7 @@ def ensure_ready() -> str:
     sv = body.get("stateVersion")
     if sv is not None:
         bridge.state.version = sv
+    bridge.session["solidworks_version"] = body.get("swVersion")
     return (
         f"READY | server=UP | "
         f"com_attached={body.get('comAttached')} | "

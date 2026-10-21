@@ -15,7 +15,6 @@ dependency is what keeps the compiler relocatable to a standalone service later 
 """
 import os
 import sys
-import uuid
 
 try:
     from pycompiler.compiler import compile_and_run
@@ -29,6 +28,7 @@ except ImportError:
     from pycompiler.execution_port import ExecutionPort
 
 from execution_client import call_tool, get_state          # noqa: E402
+from solidpilot import runs                                            # noqa: E402
 from solidpilot.bridge import is_state_mismatch as _is_state_mismatch   # noqa: E402  (single source of truth)
 
 
@@ -41,10 +41,10 @@ class AdapterExecutionPort(ExecutionPort):
     """
 
     def execute(self, tool, params, state_version):
-        resp = call_tool(tool, str(uuid.uuid4()), state_version, params)
+        resp = call_tool(tool, runs.operation_id(tool), state_version, params)
         if _is_state_mismatch(resp):
             fresh = get_state()
-            resp = call_tool(tool, str(uuid.uuid4()), fresh, params)
+            resp = call_tool(tool, runs.operation_id(tool), fresh, params)
         return resp
 
     def get_state(self):

@@ -30,7 +30,7 @@ def _run(drawing_in, fixture, **kw):
     built = []
     real_read, real_run = drawing_in._draw.read, drawing_in._run_graph
     drawing_in._draw.read = lambda *a, **k: copy.deepcopy(art)
-    drawing_in._run_graph = lambda graph, fresh_document: (built.append(graph) or ("COMPLETED 4/4", True, 9))
+    drawing_in._run_graph = lambda graph, fresh_document, **kw: (built.append(graph) or ("COMPLETED 4/4", True, 9))
     try:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
             src = os.path.join(d, "part.dxf")

@@ -5,10 +5,9 @@ Owns the in-memory state_version and the ONE retry/resync path. Tool modules cal
 `call_tool` directly; tests patch `bridge.call_tool` / `bridge._call_raw`, so callers reach
 `_call_raw` as `bridge._call_raw(...)` (attribute lookup at call time), not by import.
 """
-import uuid
-
 from execution_client import call_tool, get_state, ExecutionLayerError
 from response_mapper import map_response, CadOperationError
+from solidpilot import runs
 
 
 class BridgeState:
@@ -22,9 +21,13 @@ class BridgeState:
 
 state = BridgeState()
 
+# Facts about the connected SolidWorks, filled by ensure_ready; recorded in every run manifest.
+session: dict = {}
 
-def _next_operation_id() -> str:
-    return str(uuid.uuid4())
+
+def _next_operation_id(tool: str = "?") -> str:
+    """Random outside a run; derived from (run_id, sequence) inside one (see solidpilot.runs)."""
+    return runs.operation_id(tool)
 
 
 def _update_state_version(response: dict) -> None:
@@ -45,10 +48,10 @@ _is_state_mismatch = is_state_mismatch   # historical name
 def _execute(tool_name: str, params: dict) -> dict:
     """The single retry core: one call, and on INVALID_STATE_VERSION fetch the authoritative
     state_version and retry once with a fresh operation_id."""
-    response = call_tool(tool_name, _next_operation_id(), state.version, params)
+    response = call_tool(tool_name, _next_operation_id(tool_name), state.version, params)
     if is_state_mismatch(response):
         state.version = get_state()
-        response = call_tool(tool_name, _next_operation_id(), state.version, params)
+        response = call_tool(tool_name, _next_operation_id(tool_name), state.version, params)
     _update_state_version(response)
     return response
 
