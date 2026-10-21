@@ -83,16 +83,13 @@ def _run_graph(graph_obj, fresh_document, kind="graph", source=None):
     build can be named, inspected and replayed."""
     run = runs.begin(kind, graph_obj, source)
     try:
-        text, ok, sv = _run_graph_inner(graph_obj, fresh_document)
+        text, ok, sv, compile_result = _run_graph_inner(graph_obj, fresh_document)
     except BaseException:
         runs.end(run, "CRASHED", "exception escaped the compiler", session=bridge.session)
         raise
-    runs.end(run, "COMPLETED" if ok else "FAILED", text.splitlines()[0][:300],
-             compile_result=_LAST_COMPILE.pop("result", None), state_version=sv, session=bridge.session)
+    runs.end(run, "COMPLETED" if ok else "FAILED", (text.splitlines() or [""])[0][:300],
+             compile_result=compile_result, state_version=sv, session=bridge.session)
     return text + " | run_id=" + run.run_id, ok, sv
-
-
-_LAST_COMPILE: dict = {}
 
 
 def _run_graph_inner(graph_obj, fresh_document):
@@ -103,7 +100,7 @@ def _run_graph_inner(graph_obj, fresh_document):
     analyze_drawing(mode='build') lowers a drawing), and they all land here, so the document
     choice, the compiler entry point and the post-run resync cannot diverge between them.
 
-    Returns (text, ok, state_version). On failure `text` is already a complete FAILED line."""
+    Returns (text, ok, state_version, compile_dict|None). On failure `text` is already a complete FAILED line."""
     if fresh_document:
         # The graph type picks the document: an assembly graph (component/mate nodes) needs an
         # assembly, a part graph a part.
@@ -115,27 +112,26 @@ def _run_graph_inner(graph_obj, fresh_document):
         if opened.get("status") != "COMPLETED":
             err = opened.get("error") or {}
             return (f"FAILED | {new_tool.upper()}_FAILED | {err.get('code')}: {err.get('message')}",
-                    False, bridge.state.version)
+                    False, bridge.state.version, None)
 
     # Lazy import: a missing compiler tree degrades to a clean tool error instead of killing the
     # whole MCP server at startup.
     try:
         from ir_execution_port import run_feature_graph
     except Exception as ex:  # noqa: BLE001
-        return f"FAILED | COMPILER_UNAVAILABLE | {ex}", False, bridge.state.version
+        return f"FAILED | COMPILER_UNAVAILABLE | {ex}", False, bridge.state.version, None
 
     # NEVER let an exception crash the MCP server; resync state_version regardless (IR-ADR-001) —
     # one run performs MANY state-bumping sub-ops outside _call() (KNOWN-LIMITATIONS #5).
     try:
         result = run_feature_graph(graph_obj)
-        _LAST_COMPILE["result"] = result.to_dict()
     except Exception as ex:  # noqa: BLE001
         sv = bridge._resync_state_version()
         return (f"FAILED | UNEXPECTED | {type(ex).__name__}: {ex} | state_version resynced to {sv}",
-                False, sv)
+                False, sv, None)
     # ok must reflect the COMPILE outcome: callers (analyze_drawing build, rebuild_from_ir) append
     # success-only tails ("built from…", VERIFY hints) that are wrong on a half-built part.
-    return result.summary(), result.status == "COMPLETED", bridge._resync_state_version()
+    return result.summary(), result.status == "COMPLETED", bridge._resync_state_version(), result.to_dict()
 
 
 @mcp.tool(structured_output=False)
