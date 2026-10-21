@@ -221,13 +221,13 @@ async def deliver_document(file_path: str = "", format: str = "", delivery_slot:
     temp_copy = ""
     try:
         if fmt:
-            state = sw_server._call_raw("verify_state", {})
+            state = sw_server.bridge._call_raw("verify_state", {})
             title = ((state.get("cadState") or {}).get("activeDocument") or "document")
             name = _safe_name(os.path.splitext(title)[0] or "document") + _EXPORT_EXT[fmt]
             os.makedirs(STAGING_DIR, exist_ok=True)
             _sweep_staging()
             temp_copy = path = os.path.join(STAGING_DIR, f"deliver-{delivery_slot[:8]}-{name}")
-            r = sw_server._call_raw("export_document", {"format": fmt, "file_path": path})
+            r = sw_server.bridge._call_raw("export_document", {"format": fmt, "file_path": path})
             if r.get("status") != "COMPLETED":
                 err = r.get("error") or {}
                 raise ToolError(f"EXPORT_FAILED: {err.get('code')}: {err.get('message')}")
@@ -238,7 +238,7 @@ async def deliver_document(file_path: str = "", format: str = "", delivery_slot:
                 raise ToolError(f"FORBIDDEN_PATH: only files under {STAGING_DIR} (or the owner's allowed folders) can be delivered")
             filename = os.path.basename(path)
         else:
-            r = sw_server._call_raw("save_document", {"file_path": ""})   # in place; the path comes from SolidWorks itself
+            r = sw_server.bridge._call_raw("save_document", {"file_path": ""})   # in place; the path comes from SolidWorks itself
             if r.get("status") != "COMPLETED":
                 err = r.get("error") or {}
                 raise ToolError(f"SAVE_FAILED: {err.get('code')}: {err.get('message')}")

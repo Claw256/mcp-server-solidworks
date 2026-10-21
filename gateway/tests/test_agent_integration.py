@@ -24,7 +24,7 @@ async def live_agent(gateway, tmp_path, monkeypatch):
     monkeypatch.setattr(agent, "STAGING_DIR", str(tmp_path / "staging"))
     monkeypatch.setattr(agent, "POLL_WAIT", 1)
     monkeypatch.setattr(agent, "_call_lock", asyncio.Lock())
-    monkeypatch.setattr(agent.sw_server, "_ensure_ready", lambda: {
+    monkeypatch.setattr(agent.sw_server.documents, "_ensure_ready", lambda: {
         "comAttached": True, "swLaunched": False, "activeDocument": None, "swVersion": "test", "stateVersion": 7})
     client = httpx.AsyncClient()
     task = asyncio.create_task(agent.poll_forever(agent.Gateway(client)))

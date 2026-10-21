@@ -29,18 +29,13 @@ except ImportError:
     from pycompiler.execution_port import ExecutionPort
 
 from execution_client import call_tool, get_state          # noqa: E402
-
-
-def _is_state_mismatch(resp):
-    if resp.get("status") != "FAILED":
-        return False
-    return (resp.get("error") or {}).get("code") == "INVALID_STATE_VERSION"
+from solidpilot.bridge import is_state_mismatch as _is_state_mismatch   # noqa: E402  (single source of truth)
 
 
 class AdapterExecutionPort(ExecutionPort):
     """Concrete ExecutionPort over the live execution REST layer.
 
-    Owns transport robustness: one resync+retry on INVALID_STATE_VERSION (mirrors server._call),
+    Owns transport robustness: one resync+retry on INVALID_STATE_VERSION (mirrors bridge._execute),
     then returns the final response so the compiler threads the resulting state_version. A fresh
     operation_id per sub-op keeps each individually idempotent on the server's OperationGuard.
     """
@@ -59,7 +54,7 @@ class AdapterExecutionPort(ExecutionPort):
 def run_feature_graph(graph):
     """Compile + run a Feature Graph IR (dict) against the live execution layer.
 
-    Returns a pycompiler CompileResult. Does NOT touch the adapter's state_version global — the
+    Returns a pycompiler CompileResult. Does NOT touch the bridge's state_version — the
     caller (server.submit_feature_graph) resyncs that afterwards via GET /state (first-class).
     """
     return compile_and_run(AdapterExecutionPort(), graph)

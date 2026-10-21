@@ -89,7 +89,7 @@ async def test_deliver_export_of_active_document_cleans_up(gateway_blob, fake_bl
             fh.write(b"ISO-10303-21;" * 1000)
         return {"status": "COMPLETED"}
 
-    monkeypatch.setattr(agent.sw_server, "_call_raw", fake_call_raw)
+    monkeypatch.setattr(agent.sw_server.bridge, "_call_raw", fake_call_raw)
     res = await call(gateway_blob, tok["access_token"], "deliver_document", {"format": "step"})
     assert not res.get("isError"), res
     assert "Bracket.step" in res["content"][0]["text"]
@@ -102,7 +102,7 @@ async def test_deliver_save_in_place_uses_path_from_solidworks(gateway_blob, fak
     doc = tmp_path / "elsewhere" / "Frame.SLDASM"          # outside the staging folder: allowed because SolidWorks says so
     doc.parent.mkdir()
     doc.write_bytes(b"asm" * 100)
-    monkeypatch.setattr(agent.sw_server, "_call_raw", lambda tool, params: {
+    monkeypatch.setattr(agent.sw_server.bridge, "_call_raw", lambda tool, params: {
         "status": "COMPLETED", "cadState": {"features": [str(doc)]}})
     res = await call(gateway_blob, tok["access_token"], "deliver_document", {})
     assert not res.get("isError"), res
