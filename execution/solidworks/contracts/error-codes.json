@@ -1,0 +1,291 @@
+{
+  "_note": "Every error code the execution layer can return: retryable = re-sending the SAME call can succeed (a transient condition); hint = the next step for the model. tests/test_error_registry.py keeps this in step with the C# sources.",
+  "ACTIVATE_FAILED": {
+    "retryable": false,
+    "hint": "SolidWorks could not activate that document; it may have been closed."
+  },
+  "ADD_MATE_FAILED": {
+    "retryable": false,
+    "hint": "The mate was rejected; check the entity names/types, alignment and that the mate is not over-defining."
+  },
+  "ANALYSIS_FAILED": {
+    "retryable": false,
+    "hint": "The analysis could not be completed; check the document type and that it holds a solid body."
+  },
+  "AXIS_NOT_FOUND": {
+    "retryable": false,
+    "hint": "The axis could not be found; check its name or define it with add_reference_geometry."
+  },
+  "BATCH_EXPORT_FAILED": {
+    "retryable": false,
+    "hint": "One or more formats failed; run export_document for each format to see which."
+  },
+  "BEND_FLIP_FAILED": {
+    "retryable": false,
+    "hint": "The bend could not be flipped; rebuild the bend with the opposite flip setting."
+  },
+  "BODY_COPY_FAILED": {
+    "retryable": false,
+    "hint": "The body could not be copied."
+  },
+  "BODY_FEATURE_FAILED": {
+    "retryable": false,
+    "hint": "The body feature failed."
+  },
+  "BODY_NOT_FOUND": {
+    "retryable": false,
+    "hint": "No solid body at that index; analyze_model('bodies') lists them."
+  },
+  "CALLOUT_FAILED": {
+    "retryable": false,
+    "hint": "The hole callout could not be added; place px/py on the hole's circular edge."
+  },
+  "COM_ATTACH_FAILED": {
+    "retryable": true,
+    "hint": "SolidWorks is not reachable. Call ensure_ready, then retry."
+  },
+  "COM_ERROR": {
+    "retryable": true,
+    "hint": "SolidWorks rejected the call. Check for a modal dialog, call verify_state, then retry once; if it repeats, change the inputs."
+  },
+  "DIMENSION_CREATION_FAILED": {
+    "retryable": false,
+    "hint": "The dimension could not be added; check the pick points lie on the geometry."
+  },
+  "DIMENSION_NOT_FOUND": {
+    "retryable": false,
+    "hint": "No dimension has that name; analyze_model('features') lists driving dimensions."
+  },
+  "DIRECTION_NOT_FOUND": {
+    "retryable": false,
+    "hint": "The direction reference could not be resolved."
+  },
+  "DOCUMENT_CAST_FAILED": {
+    "retryable": false,
+    "hint": "The active document is not the expected kind for this operation."
+  },
+  "DOCUMENT_CREATION_FAILED": {
+    "retryable": false,
+    "hint": "SolidWorks could not create the document; check the template path (open_new_part template_path) and call ensure_ready."
+  },
+  "DOCUMENT_NOT_FOUND": {
+    "retryable": false,
+    "hint": "No open document has that title. verify_state lists the active one; open it first."
+  },
+  "EDGE_NOT_FOUND": {
+    "retryable": false,
+    "hint": "No edge matched. Use analyze_model('edges', near=...) and pass edge_indices, or an edge midpoint."
+  },
+  "ENTITY_NOT_FOUND": {
+    "retryable": false,
+    "hint": "No entity matched; check the name/type and that the document holds it."
+  },
+  "EXPORT_FAILED": {
+    "retryable": false,
+    "hint": "The export failed; check the format and that the target folder is writable and the file is not open elsewhere."
+  },
+  "EXTRUSION_FAILED": {
+    "retryable": false,
+    "hint": "The extrusion produced no feature: check the profile is closed, the depth > 0 and the direction (reverse) is on the material side."
+  },
+  "FACE_NOT_FOUND": {
+    "retryable": false,
+    "hint": "No face matched. Use analyze_model('faces') and pass its index, or a point that lies on the face."
+  },
+  "FEATURE_CREATION_FAILED": {
+    "retryable": false,
+    "hint": "SolidWorks created no feature; check the profile is closed/valid and the end condition makes sense."
+  },
+  "FEATURE_NOT_FOUND": {
+    "retryable": false,
+    "hint": "No feature has that name; analyze_model('features') lists them (names may be localized)."
+  },
+  "FILE_NOT_FOUND": {
+    "retryable": false,
+    "hint": "The file path does not exist on the PC running SolidWorks. Check the path and spelling."
+  },
+  "FLAT_PATTERN_FAILED": {
+    "retryable": false,
+    "hint": "The flat pattern could not be created; check the sheet-metal body is valid."
+  },
+  "FLAT_PATTERN_VIEW_FAILED": {
+    "retryable": false,
+    "hint": "The flat-pattern view could not be created; the part must be sheet metal with a flat pattern."
+  },
+  "HOLE_WIZARD_FAILED": {
+    "retryable": false,
+    "hint": "Hole Wizard created no hole; check the face reference, diameter and depth."
+  },
+  "HOLE_WIZARD_FEATURE_ERROR": {
+    "retryable": false,
+    "hint": "Hole Wizard produced a feature in error; see feature_errors, adjust diameter/depth/position."
+  },
+  "INSERT_FAILED": {
+    "retryable": false,
+    "hint": "The component could not be inserted; check the file path and that it is a part/assembly."
+  },
+  "INVALID_PARAMETER": {
+    "retryable": false,
+    "hint": "A parameter value is not accepted; the message says which and why."
+  },
+  "INVALID_STATE_VERSION": {
+    "retryable": true,
+    "hint": "The adapter resyncs and retries this automatically; if you still see it, call verify_state and retry."
+  },
+  "MATERIAL_NOT_FOUND": {
+    "retryable": false,
+    "hint": "That material is not in the library; the name must match the SolidWorks Materials database exactly."
+  },
+  "MISSING_PARAMETER": {
+    "retryable": false,
+    "hint": "A required parameter is missing or out of range; the message names it. Fix the call, do not repeat it."
+  },
+  "MODEL_NOT_FOUND": {
+    "retryable": false,
+    "hint": "The referenced model file could not be found; check the path."
+  },
+  "NOT_A_DRAWING": {
+    "retryable": false,
+    "hint": "The active document is not a drawing. create_drawing, or activate the drawing."
+  },
+  "NO_ACTIVE_DOCUMENT": {
+    "retryable": false,
+    "hint": "No document is open. open_new_part / open_document / create_drawing first."
+  },
+  "OPEN_FAILED": {
+    "retryable": false,
+    "hint": "SolidWorks could not open the file (corrupt, wrong version, or locked). Try STEP/DXF import or another copy."
+  },
+  "PATTERN_FAILED": {
+    "retryable": false,
+    "hint": "The pattern produced no instances; check the seed feature, spacing/angle and count."
+  },
+  "PLANE_NOT_FOUND": {
+    "retryable": false,
+    "hint": "No plane has that name (it may be localized); use Front/Top/Right Plane names as listed by analyze_model."
+  },
+  "POINT_NOT_ON_FACE": {
+    "retryable": false,
+    "hint": "The point does not lie on the selected face; take a point from analyze_model('faces')."
+  },
+  "PROFILE_NOT_FOUND": {
+    "retryable": false,
+    "hint": "The profile sketch was not found; create it and keep it as the previous sketch."
+  },
+  "REFERENCE_GEOMETRY_FAILED": {
+    "retryable": false,
+    "hint": "The reference plane/axis could not be created; check the referenced entities."
+  },
+  "RIB_FAILED": {
+    "retryable": false,
+    "hint": "The rib produced no feature: the profile must be open geometry whose extension meets existing walls."
+  },
+  "SAVE_FAILED": {
+    "retryable": false,
+    "hint": "The file could not be saved (read-only, invalid name, or locked). Choose another path with save_document."
+  },
+  "SECTION_LINE_FAILED": {
+    "retryable": false,
+    "hint": "The section line could not be created; place it across the parent view."
+  },
+  "SECTION_VIEW_FAILED": {
+    "retryable": false,
+    "hint": "The section view failed; check the cut line position on the parent view."
+  },
+  "SEGMENT_NOT_FOUND": {
+    "retryable": false,
+    "hint": "No sketch segment matched the given point."
+  },
+  "SELECTION_FAILED": {
+    "retryable": false,
+    "hint": "SolidWorks could not select the target; check names/coordinates and that nothing else is selected."
+  },
+  "SHEET_METAL_FAILED": {
+    "retryable": false,
+    "hint": "The sheet-metal feature failed; check thickness, the edge/face reference and that the part is a sheet-metal body."
+  },
+  "SKETCH_ALREADY_ACTIVE": {
+    "retryable": false,
+    "hint": "A sketch is already open; finish it (the feature tools exit it) before creating another."
+  },
+  "SKETCH_CREATION_FAILED": {
+    "retryable": false,
+    "hint": "The sketch could not be created; check the plane/face reference."
+  },
+  "SKETCH_EDIT_FAILED": {
+    "retryable": false,
+    "hint": "The sketch could not be opened for editing."
+  },
+  "SKETCH_NOT_ACTIVE": {
+    "retryable": false,
+    "hint": "A sketch must be active first: create_sketch (or edit_sketch), add geometry, then run this tool."
+  },
+  "SKETCH_NOT_FOUND": {
+    "retryable": false,
+    "hint": "No sketch has that name; analyze_model('features') lists them."
+  },
+  "TEMPLATE_NOT_FOUND": {
+    "retryable": false,
+    "hint": "The template file does not exist. Omit template_path to use the default, or pass a valid .prtdot/.asmdot/.drwdot path."
+  },
+  "TOOL_TIMEOUT": {
+    "retryable": false,
+    "hint": "The operation may still be running inside SolidWorks. Do NOT re-run it: call verify_state, look for a modal dialog in SolidWorks, then continue."
+  },
+  "TRANSFORM_FAILED": {
+    "retryable": false,
+    "hint": "The component transform could not be applied."
+  },
+  "UNEXPECTED_ERROR": {
+    "retryable": false,
+    "hint": "An unhandled error inside the execution layer. Check execution.log; call verify_state before retrying."
+  },
+  "UNKNOWN_TOOL": {
+    "retryable": false,
+    "hint": "The execution layer does not know this tool; the adapter and the execution exe are out of sync. Rebuild/restart the execution server."
+  },
+  "UNSUPPORTED_ANALYSIS_TYPE": {
+    "retryable": false,
+    "hint": "analysis_type is not one of the supported values; see analyze_model."
+  },
+  "UNSUPPORTED_CONSTRAINT_TYPE": {
+    "retryable": false,
+    "hint": "constraint_type is not supported; see add_sketch_constraint."
+  },
+  "UNSUPPORTED_DISPLAY_MODE": {
+    "retryable": false,
+    "hint": "display mode is not supported."
+  },
+  "UNSUPPORTED_FEATURE_TYPE": {
+    "retryable": false,
+    "hint": "feature_type is not supported by this tool."
+  },
+  "UNSUPPORTED_GEOMETRY_TYPE": {
+    "retryable": false,
+    "hint": "That geometry type is not supported by this tool."
+  },
+  "UNSUPPORTED_MATE_TYPE": {
+    "retryable": false,
+    "hint": "mate_type is not supported; see add_mate."
+  },
+  "UNSUPPORTED_VIEW_TYPE": {
+    "retryable": false,
+    "hint": "view type is not supported; see add_drawing_view."
+  },
+  "VERTEX_NOT_FOUND": {
+    "retryable": false,
+    "hint": "No vertex matched the given point."
+  },
+  "VIEW_CREATION_FAILED": {
+    "retryable": false,
+    "hint": "The drawing view could not be created; the drawing needs a model to reference."
+  },
+  "WRONG_DOCUMENT_TYPE": {
+    "retryable": false,
+    "hint": "This tool needs a different document type (part, assembly or drawing). activate_document or open the right one."
+  },
+  "WRONG_FEATURE_TYPE": {
+    "retryable": false,
+    "hint": "That feature is not of the type this operation needs; analyze_model('features') lists types."
+  }
+}
