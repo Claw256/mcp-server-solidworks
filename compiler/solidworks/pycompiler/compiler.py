@@ -96,22 +96,20 @@ def compile_and_run(port, graph):
             frame_mirror = False
             for op in ops:
                 params = _fill_placeholders(op, last_resp, node_features, nid, ntype)
-                if lowering.EDGE_RING in params:
+                directives = op.directives or {}
+                if lowering.DIR_EDGE_RING in directives:
                     # Resolved NOW, against the geometry the previous ops just produced (a hole's rim
                     # does not exist until the hole is cut, so it cannot be planned up front).
-                    ring = params[lowering.EDGE_RING]
-                    params = {k: v for k, v in params.items() if k != lowering.EDGE_RING}
+                    ring = directives[lowering.DIR_EDGE_RING]
+                    params = dict(params)
                     idx = resolve_circular_edges(port, sv, ring["center"], ring["normal"],
                                                  ring["radius"], node_id=nid)
                     params["edge_indices"] = "[%s]" % ",".join(str(i) for i in idx)
-                if lowering.SKETCH_FRAME_DECL in params:
+                if lowering.DIR_SKETCH_FRAME in directives:
                     # This sketch op declares its OWN frame (e.g. a countersink cone profile on a
                     # datum plane), replacing the node-level one from here on.
-                    decl_frame = params[lowering.SKETCH_FRAME_DECL]
-                    params = {k: v for k, v in params.items() if k != lowering.SKETCH_FRAME_DECL}
-                axis_in_frame = params.get(lowering.AXIS_IN_FRAME) is True
-                if lowering.AXIS_IN_FRAME in params:
-                    params = {k: v for k, v in params.items() if k != lowering.AXIS_IN_FRAME}
+                    decl_frame = directives[lowering.DIR_SKETCH_FRAME]
+                axis_in_frame = directives.get(lowering.DIR_AXIS_IN_FRAME) is True
                 if frame_fn is not None and op.tool == "add_sketch_entity":
                     params = _transform_entity_params(params, frame_fn, frame_mirror)
                 elif frame_fn is not None and axis_in_frame and op.tool == "extrude_feature":

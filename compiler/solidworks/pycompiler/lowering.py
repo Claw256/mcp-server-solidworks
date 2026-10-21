@@ -22,7 +22,14 @@ import json
 import math
 from collections import namedtuple
 
-Op = namedtuple("Op", ["tool", "params", "note"])
+# An Op is one execution-tool call. `params` are EXACTLY what the tool receives. `directives` are
+# instructions to the COMPILER about how to run the op (never sent to a tool): they used to ride inside
+# `params` as magic keys the compiler had to find and strip.
+Op = namedtuple("Op", ["tool", "params", "note", "directives"], defaults=({},))
+
+DIR_EDGE_RING = "edge_ring"          # resolve this circle to edge_indices at run time (against geometry just built)
+DIR_SKETCH_FRAME = "sketch_frame"    # declare THIS frame for the sketch the op opens
+DIR_AXIS_IN_FRAME = "axis_in_frame"  # revolve axis coords are in the declared frame (transformed like entities)
 
 # Sentinel (JSON-safe string, impossible as a real plane name) — see module docstring.
 FROM_PREV_FEATURE = "__FROM_PREV_FEATURE__"
@@ -453,17 +460,11 @@ def lower_mate(node, sides):
                % (node["mate_type"], an, ak, int(ai), bn, bk, int(bi)))]
 
 
-EDGE_RING = "__edge_ring__"     # op-param marker: the compiler resolves it to edge_indices at run time
-
 
 def _cut_params(depth):
     if depth in ("through_all", "through"):
         return {"feature_type": "cut", "through": True}
     return {"feature_type": "cut", "depth": float(depth)}
-
-
-SKETCH_FRAME_DECL = "__sketch_frame__"   # op-param marker: the compiler pops it and declares THIS frame for the sketch
-AXIS_IN_FRAME = "__axis_in_frame__"       # op-param marker: revolve axis coords are in the declared frame (transformed like entities)
 
 
 def csink_is_90(node):
@@ -490,8 +491,9 @@ def _csink_revolve_ops(node, at, n, plane_name, plane_normal):
     e = 0.0005                          # overshoot above the face
     pts = [(-e, r / 2.0), (-e, big_r + e * t), (h, r), (h, r / 2.0)]
     frame = {"origin": list(at), "xdir": d, "ydir": ey}
-    ops = [Op("create_sketch", {"plane": plane_name, "on_face": False, SKETCH_FRAME_DECL: frame},
-              "hole: countersink cone profile sketched on %s (contains the hole axis)" % plane_name)]
+    ops = [Op("create_sketch", {"plane": plane_name, "on_face": False},
+              "hole: countersink cone profile sketched on %s (contains the hole axis)" % plane_name,
+              {DIR_SKETCH_FRAME: frame})]
     for i in range(4):
         (x1, y1), (x2, y2) = pts[i], pts[(i + 1) % 4]
         ops.append(Op("add_sketch_entity", {"entity_type": "line", "x1": x1, "y1": y1, "x2": x2, "y2": y2},
@@ -499,9 +501,10 @@ def _csink_revolve_ops(node, at, n, plane_name, plane_normal):
     ops.append(Op("add_sketch_entity", {"entity_type": "line", "x1": -e, "y1": 0.0, "x2": h, "y2": 0.0},
                   "hole: countersink revolve axis"))
     ops.append(Op("extrude_feature",
-                  {"feature_type": "revolve", "angle_deg": 360.0, "revolve_cut": True, AXIS_IN_FRAME: True,
+                  {"feature_type": "revolve", "angle_deg": 360.0, "revolve_cut": True,
                    "axis_x1": -e, "axis_y1": 0.0, "axis_x2": h, "axis_y2": 0.0},
-                  "hole: %g-degree countersink revolve cut" % round(math.degrees(2.0 * half), 4)))
+                  "hole: %g-degree countersink revolve cut" % round(math.degrees(2.0 * half), 4),
+                  {DIR_AXIS_IN_FRAME: True}))
     return ops
 
 
@@ -567,9 +570,9 @@ def lower_hole(node, face_index, plan):
         setback = (float(cs["diameter"]) - float(node["diameter"])) / 2.0
         ops.append(Op("add_edge_feature",
                       {"feature_type": "chamfer", "chamfer_type": "distance_distance",
-                       "radius_or_distance": setback, "distance2": setback,
-                       EDGE_RING: {"center": list(at), "normal": list(n), "radius": r}},
-                      "hole: 90-degree countersink chamfer %g m" % setback))
+                       "radius_or_distance": setback, "distance2": setback},
+                      "hole: 90-degree countersink chamfer %g m" % setback,
+                      {DIR_EDGE_RING: {"center": list(at), "normal": list(n), "radius": r}}))
     return ops
 
 

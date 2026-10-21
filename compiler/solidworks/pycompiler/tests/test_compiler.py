@@ -1660,6 +1660,20 @@ def test_countersink_non_90_off_the_datum_planes_is_refused():
 _TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
 
 
+
+def test_compiler_directives_ride_on_the_op_not_inside_its_params():
+    """Instructions to the compiler (frame declaration, axis-in-frame, edge ring) are typed Op.directives;
+    no magic key is ever left in the params a tool receives."""
+    import math
+    from pycompiler import lowering
+    ops = lowering._csink_revolve_ops(
+        {"diameter": 0.01, "csink": {"diameter": 0.016, "angle": math.radians(120)}},
+        [0.0, 0.0, 0.05], [0.0, 0.0, 1.0], "Front Plane", [0.0, 0.0, 1.0])
+    assert ops[0].tool == "create_sketch" and ops[0].directives[lowering.DIR_SKETCH_FRAME]["origin"] == [0.0, 0.0, 0.05]
+    assert ops[-1].tool == "extrude_feature" and ops[-1].directives == {lowering.DIR_AXIS_IN_FRAME: True}
+    assert all(not str(k).startswith("__") for op in ops for k in op.params)
+    assert lowering.Op("x", {}, "n").directives == {}                 # the default: nothing to do
+
 if __name__ == "__main__":
     failed = 0
     for t in _TESTS:
