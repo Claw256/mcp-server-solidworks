@@ -19,7 +19,13 @@ The compiler (deterministic) drives this layer over plain REST. In Phase 1 the M
 - State management (documents, sketches, features) — single source of truth for CAD state.
 - Input validation and safety checks.
 - REST endpoints for all tool operations (`POST /api/tool/execute`).
-- Idempotency + `state_version` optimistic concurrency (`OperationGuard`).
+- Idempotency + `state_version` optimistic concurrency (`OperationGuard`; replay history is bounded to 5000 operations).
+- One pipeline for every tool call (`ToolPipeline`): tool lookup from the `[Tool]` registry, duplicate replay,
+  `state_version` check, dialog guard, post-tool `diagnostics`, timing. A call that exceeds
+  `SOLIDPILOT_TOOL_TIMEOUT_S` (default 15 min) answers `TOOL_TIMEOUT` instead of hanging the caller.
+- Feature-mutating tools (`[Tool(..., Diagnose = true)]`) run with modal rebuild/feature dialogs suppressed and
+  restored afterwards (`SOLIDPILOT_SUPPRESS_DIALOGS=0` disables), and return `diagnostics`: new feature errors
+  (`IFeature.GetErrorCode2`), the What's Wrong count and the volume delta.
 
 ## Constraints
 
@@ -34,6 +40,9 @@ The SolidWorks-specific low-level contracts now live **here** (moved from the ol
 execution/solidworks/contracts/
   tool-schemas.json        ← input/output schema for every low-level CAD tool
   state-format.json        ← CadState structure
-  execution-response.json  ← COMPLETED / FAILED / DUPLICATE shapes
+  execution-response.json  ← COMPLETED / FAILED / DUPLICATE shapes (the real camelCase wire names)
+  error-codes.json         ← every error code: retryable flag + next-step hint for the model
 ```
+`adapters/claude/tests` diffs these against the C# sources (`test_wire_contract.py`, `test_error_registry.py`,
+`test_schema_contract.py`), so a code, tool or field added in one place and not the other fails the suite.
 The CAD-neutral Feature Graph IR (`cad-planner/contracts/feature-graph.schema.json`) compiles **down** to these tools — the execution layer itself is unaware of the IR.

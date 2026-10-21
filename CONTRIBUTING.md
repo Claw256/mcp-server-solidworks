@@ -69,8 +69,8 @@ python server.py
 ### A new low-level tool (execution surface)
 
 1. **Contract** — add the tool to `execution/solidworks/contracts/tool-schemas.json`.
-2. **Execution** — add a `case "tool_name":` in `ToolController.cs` and implement it in the matching `SolidWorksService.<Family>.cs` **partial class** under `Services/` (one class split by tool family: core / Sketch / Features / SheetMetal / Drawing / Analyze / Assembly; a new file also needs a `<Compile Include>` entry in the csproj). **Verify any SolidWorks COM API signature by reflecting the interop assembly first — never invent a method name or argument list.** The real API frequently differs from what looks plausible (for example, the model-item insertion API lives on `IDrawingDoc`, not `IView`; `GetLines3` returns empty while `GetPolylines7` is the working geometry getter). Decode unknown return shapes empirically against a live document before writing the parser.
-3. **Adapter** — register the MCP tool in `adapters/claude/server.py`. Model-facing guidance lives here (the client never sees `tool-schemas.json`): use `Literal` enums for discriminators, Pydantic `Field` constraints for units and ranges, and real required parameters.
+2. **Execution** — mark the method `[Tool("tool_name")]` (add `Diagnose = true` for a tool that creates or changes features; `CheckStateVersion = false` only for one that deliberately works across versions — `ToolRegistry` discovers it, there is no dispatch switch to edit), register any new error code in `contracts/error-codes.json`, and implement it in the matching `SolidWorksService.<Family>.cs` **partial class** under `Services/` (one class split by tool family: core / Sketch / Features / SheetMetal / Drawing / Analyze / Assembly; a new file also needs a `<Compile Include>` entry in the csproj). **Verify any SolidWorks COM API signature by reflecting the interop assembly first — never invent a method name or argument list.** The real API frequently differs from what looks plausible (for example, the model-item insertion API lives on `IDrawingDoc`, not `IView`; `GetLines3` returns empty while `GetPolylines7` is the working geometry getter). Decode unknown return shapes empirically against a live document before writing the parser.
+3. **Adapter** — register the MCP tool in the matching module under `adapters/claude/solidpilot/tools/` (`server.py` only imports them). Model-facing guidance lives here (the client never sees `tool-schemas.json`): use `Literal` enums for discriminators, Pydantic `Field` constraints for units and ranges, and real required parameters.
 4. **Verify** — run the contract test (see below), then validate against live SolidWorks.
 
 ### A new feature (IR level — the strategic direction)
@@ -85,7 +85,7 @@ python server.py
 
 ## Conventions
 
-- **Units:** all lengths are in meters (SolidWorks internal units). Angles are taken in degrees at the adapter boundary.
+- **Units:** all lengths are in meters (SolidWorks internal units). Angles are RADIANS in the IR and in `modify_dimension`; the low-level feature tools take DEGREES and say so in the parameter name (`angle_deg`, `csink_angle_deg`).
 - **HTTP semantics:** all CAD results return HTTP 200; `FAILED` and `DUPLICATE` are domain states, not transport errors. HTTP 400 is only for malformed requests or unknown tool names.
 - **state_version:** every request is checked with strict equality; a mismatch returns `FAILED` with `INVALID_STATE_VERSION`. The adapter increments its local value only on a `COMPLETED` response.
 - **Variable-length array parameters** must be passed as a JSON string at the MCP boundary (e.g. `points: str = "[]"`), not as a `list`/`List` type. The MCP client stringifies list-typed arguments, which makes a list-typed parameter uncallable; parse the string in the adapter (`json.loads`) or in C#.
@@ -116,7 +116,10 @@ python server.py
 
 - **Adapter and planner suites (offline):** each runs standalone or under `pytest`. `adapters/claude/tests/test_drawing_verify.py` (PASS/FAIL comparison), `test_drawing_prep.py` (image-size maths, BMP→PNG, `export_image`, and PDF tiling when the optional PyMuPDF is installed), `test_execution_client_http.py`, and `cad-planner/drawing/tests/test_draw_contract.py` (draw dialect, direct-build gate incl. the units and mixed-bend guards). `test_schema_contract.py` needs the adapter's dependencies (`pip install -r adapters/claude/requirements.txt`).
 
-Both offline suites run in **CI on every push/PR** (`.github/workflows/ci.yml`). The C# layer is not built in CI — it requires the licensed SolidWorks interop assemblies; C# behavior is verified live instead.
+The offline suites are what a CI run executes (`.github/workflows/ci.yml`: the adapter, gateway, compiler and drawing-reader suites). That workflow file is kept **locally and git-ignored** by project decision (`.gitignore`), so run the suites yourself before a PR: `python -m pytest -q` in each of `adapters/claude`, `gateway`, `compiler/solidworks` and `cad-planner/drawing`.
+
+- **C# unit tests (no SolidWorks needed to run):** `execution/solidworks/SolidworksExecution.Tests` covers the pure infrastructure — the `[Tool]` registry, `OperationGuard`, `StaExecutor` timeout, response building. It still needs the SolidWorks interop DLLs *present* to load the service type (`dotnet build` / `dotnet test`, `-p:SolidWorksApiDir=...` if SolidWorks is not under `C:\Program Files`). The COM behaviour itself (feature diagnostics, the dialog guard, `save_copy`) is verified live against SolidWorks, case by case.
+- **Drift guards in the adapter suite** (all offline): `test_schema_contract.py` (tools/params vs `tool-schemas.json`, and the C# `[Tool]` set), `test_wire_contract.py` (wire field names), `test_error_registry.py` (every C# error code is registered with a hint), `test_compiler_adapter_parity.py` (every parameter the compiler emits exists in the adapter), `test_surface_budget.py` (size and hygiene of the model-facing surface).
 
 ---
 
