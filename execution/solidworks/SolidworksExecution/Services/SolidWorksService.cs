@@ -352,8 +352,40 @@ namespace SolidworksExecution.Services
                     default: docType = (int)swDocumentTypes_e.swDocPART; break;
                 }
 
+                // Mesh import (mesh_as / units): validated BEFORE any COM change; applied only to mesh files.
+                // Prefs (type, units, AsPSMesh, Segmented) are saved, set, and ALWAYS restored in the finally.
+                bool isMesh = MeshImportOptions.IsMeshExtension(ext);
+                MeshImportOptions mesh = null;
+                if (isMesh || p.Value<string>("mesh_as") != null || p.Value<string>("units") != null)
+                {
+                    string meshErr;
+                    mesh = MeshImportOptions.Parse(p, out meshErr);
+                    if (mesh == null)
+                        return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
+                            "INVALID_PARAMETER", meshErr);
+                }
+                int prefType = 0, prefUnits = 0;
+                bool prefPsMesh = false, prefSegmented = false, prefsSaved = false;
+
                 int errors = 0, warnings = 0;
-                var modelDoc = _solidWorks.OpenDoc6(filePath, docType,
+                IModelDoc2 modelDoc = null;
+                string openPath = "OpenDoc6";
+                try
+                {
+                if (isMesh)
+                {
+                    prefType = _solidWorks.GetUserPreferenceIntegerValue((int)swUserPreferenceIntegerValue_e.swImportStlVrmlModelType);
+                    prefUnits = _solidWorks.GetUserPreferenceIntegerValue((int)swUserPreferenceIntegerValue_e.swImportStlVrmlUnits);
+                    prefPsMesh = _solidWorks.GetUserPreferenceToggle((int)swUserPreferenceToggle_e.swVrmlStlImportAsPSMesh);
+                    prefSegmented = _solidWorks.GetUserPreferenceToggle((int)swUserPreferenceToggle_e.swVrmlStlImportSegmented);
+                    prefsSaved = true;
+                    _solidWorks.SetUserPreferenceIntegerValue((int)swUserPreferenceIntegerValue_e.swImportStlVrmlModelType, mesh.ModelType);
+                    _solidWorks.SetUserPreferenceIntegerValue((int)swUserPreferenceIntegerValue_e.swImportStlVrmlUnits, mesh.UnitValue);
+                    _solidWorks.SetUserPreferenceToggle((int)swUserPreferenceToggle_e.swVrmlStlImportAsPSMesh, mesh.AsMeshBody);
+                    _solidWorks.SetUserPreferenceToggle((int)swUserPreferenceToggle_e.swVrmlStlImportSegmented, false);
+                    ExecLog.Write($"open_document(mesh): mesh_as={mesh.MeshAs} units={mesh.Units} (prior type={prefType} units={prefUnits} psMesh={prefPsMesh} segmented={prefSegmented})");
+                }
+                modelDoc = _solidWorks.OpenDoc6(filePath, docType,
                     (int)swOpenDocOptions_e.swOpenDocOptions_Silent, "", ref errors, ref warnings) as IModelDoc2;
 
                 // FOREIGN-FORMAT staged fallback (2026-07-09, proven live): with 3D Interconnect OFF,
@@ -365,7 +397,6 @@ namespace SolidworksExecution.Services
                 // swMultiCAD_Enable3DInterconnect=691) and retry OpenDoc6 once; left ON afterwards
                 // (the steady state for mixed-CAD sample folders).
                 bool foreign = ext != ".sldprt" && ext != ".sldasm" && ext != ".slddrw";
-                string openPath = "OpenDoc6";
                 // as_assembly=true (foreign only): the file is an ASSEMBLY STEP/etc. The classic
                 // translator (LoadFile4) imports an assembly STEP as a MULTIBODY PART (proven live
                 // 2026-07-09 on Fixture Assembly.step) — only 3D Interconnect maps it to a real
@@ -407,6 +438,21 @@ namespace SolidworksExecution.Services
                         openPath = "OpenDoc6+3DInterconnect";
                     }
                 }
+                }
+                finally
+                {
+                    if (prefsSaved)
+                    {
+                        try
+                        {
+                            _solidWorks.SetUserPreferenceIntegerValue((int)swUserPreferenceIntegerValue_e.swImportStlVrmlModelType, prefType);
+                            _solidWorks.SetUserPreferenceIntegerValue((int)swUserPreferenceIntegerValue_e.swImportStlVrmlUnits, prefUnits);
+                            _solidWorks.SetUserPreferenceToggle((int)swUserPreferenceToggle_e.swVrmlStlImportAsPSMesh, prefPsMesh);
+                            _solidWorks.SetUserPreferenceToggle((int)swUserPreferenceToggle_e.swVrmlStlImportSegmented, prefSegmented);
+                        }
+                        catch (Exception rex) { ExecLog.Write("open_document(mesh): pref restore failed: " + rex.Message); }
+                    }
+                }
 
                 if (modelDoc == null)
                     return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
@@ -437,6 +483,28 @@ namespace SolidworksExecution.Services
                         $"Opened '{modelDoc.GetTitle()}' but could not make it the ACTIVE document " +
                         $"(active is '{nowActive?.GetTitle()}').");
 
+                var features = new List<string> { System.IO.Path.GetFileName(filePath) };
+                if (isMesh)
+                {
+                    // Short result summary (best effort): body count + whether the bodies are mesh BREPs.
+                    // Graphics-mode meshes have no bodies at all.
+                    int bodyCount = 0, meshBodies = 0;
+                    try
+                    {
+                        var part = modelDoc as IPartDoc;
+                        var bodies = part != null ? part.GetBodies2((int)swBodyType_e.swAllBodies, false) as object[] : null;
+                        if (bodies != null)
+                            foreach (var o in bodies)
+                            {
+                                bodyCount++;
+                                var b = o as IBody2;
+                                if (b != null && b.IsMeshBody()) meshBodies++;
+                            }
+                    }
+                    catch (Exception bex) { ExecLog.Write("open_document(mesh): body inspection failed: " + bex.Message); }
+                    features.Add($"mesh_import: mesh_as={mesh.MeshAs} units={mesh.Units} bodies={bodyCount} mesh_bodies={meshBodies}");
+                }
+
                 var response = new ExecutionResponse
                 {
                     OperationId = request.OperationId,
@@ -449,7 +517,7 @@ namespace SolidworksExecution.Services
                         ActiveDocument = modelDoc.GetTitle(),
                         DocumentType = typeName,
                         ActiveSketch = null,
-                        Features = new List<string> { System.IO.Path.GetFileName(filePath) },
+                        Features = features,
                         Dimensions = new List<string>()
                     },
                     Error = null

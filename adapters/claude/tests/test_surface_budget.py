@@ -21,9 +21,11 @@ try:
 except Exception:  # noqa: BLE001
     _TOOLS = None
 
-TOTAL_CHARS_CEILING = 94_000          # measured 93.6K at the time of writing (60 tools, incl. the 5 design_* tools)
+# 94_000 -> 95_700: the mesh front end adds analyze_mesh (~1.6K) and open_document gained mesh_as/units (~0.3K);
+# measured 95.5K with 61 tools. (60 tools incl. the 5 design_* tools measured 93.6K before.)
+TOTAL_CHARS_CEILING = 95_700
 PER_TOOL_CHARS_CEILING = 13_500       # analyze_drawing is the outlier at ~13.1K
-TOOL_COUNT_CEILING = 60
+TOOL_COUNT_CEILING = 61               # +analyze_mesh (adapter-only mesh reverse-engineering front end)
 INTERNAL_REF = re.compile(r"ADR-\d+|KNOWN-LIMITATIONS|IR-ADR|\bP0\.\d|recipe\.md\b")
 
 

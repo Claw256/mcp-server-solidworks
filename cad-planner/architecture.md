@@ -38,6 +38,10 @@ User intent ─▶ Planner (intent → Feature Graph IR) ─▶ [IR] ─▶ comp
 
 - A structured **Feature Graph / CAD execution plan** conforming to `contracts/feature-graph.schema.json`.
 
+## Mesh front end (`mesh/`)
+
+`cad-planner/mesh/` is a second reverse-engineering input next to the drawing reader: a pure-Python package (numpy/scipy/trimesh imported lazily) that reads an STL/OBJ/PLY, segments it, and lowers it to the same CAD-neutral Feature Graph IR. Strategy ladder: revolve → extrude / stacked extrude (holes as inner loops) → freeform loft of slice sketches. `smoothing.py` applies feature-preserving smoothing (Phong subdivision + Taubin, sharp edges pinned by dihedral angle, auto level by face count) to revolve/loft only, falling back if volume shrinks >0.5%. `lower.py` emits the graph plus a transform from source coordinates to the build frame; `verify.py` compares a re-exported STL with the source (deviation as % of bbox diagonal, pass/marginal/fail). No CAD knowledge: the adapter (`tools/mesh.py`) builds the graph through the normal design session. Limits: cross-axis holes listed not modelled, loft keeps the largest region per station, organic results are approximations.
+
 ## Contracts
 
 - `contracts/feature-graph.schema.json` — the neutral IR **and** capability registry (single source of truth, DRAFT v0).

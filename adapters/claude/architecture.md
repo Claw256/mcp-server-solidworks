@@ -9,7 +9,7 @@ The communication bridge between the AI host (Claude) and the system. Pure trans
 This is the key architectural decision: **MCP is the boundary where the AI host meets the system — not an internal transport.**
 
 - **Target (Feature Graph architecture):** the adapter exposes a small set of high-level design-session tools (`design_new`, `design_step`, `design_undo`, `design_redo`, `design_history`), plus a few read-only tools like `verify_state`. The host model (Claude) emits the CAD-neutral IR; everything below the IR (compiler → resolver → execution) is deterministic and is reached over plain REST, **not** MCP.
-- **Phase 1 (current, transitional):** the adapter still exposes the low-level tools directly (60 today including the orchestration tools, plus adapter-only orchestration tools like `save_analysis` / `rebuild_from_ir`) so the working end-to-end path keeps running while the IR vocabulary grows. The low-level surface collapses into the design tools once the vocabulary and resolver are ready.
+- **Phase 1 (current, transitional):** the adapter still exposes the low-level tools directly (61 today including the orchestration tools, plus adapter-only orchestration tools like `save_analysis` / `rebuild_from_ir`) so the working end-to-end path keeps running while the IR vocabulary grows. The low-level surface collapses into the design tools once the vocabulary and resolver are ready.
 - **The recipe/contract prose is a RESOURCE surface, not tools** (ADR-069, 2026-07-30): 13 read-only resources over `cad-planner/` (`recipe://usage/*`, `schema://*`). Tools are for *doing*; resources are for *reading* near-static, caller-independent content. The distinction is economic as well as conceptual — a tool's docstring is paid on every turn, a resource's body only when read.
 
 ```
@@ -37,7 +37,9 @@ solidpilot/
   surface.py                 server instructions, MCP annotations (readOnly/destructive/idempotent)
   payloads.py / paths.py     shared helpers
   tools/                     documents · assembly · sketch · features · drawing_out · export · analysis ·
-                             drawing_in · clarify (ask_user) · recipes · compare · graph · checkpoints
+                             drawing_in · clarify (ask_user) · recipes · compare · graph · checkpoints ·
+                             mesh (analyze_mesh: STL/OBJ/PLY front end over cad-planner/mesh; optional
+                             numpy/scipy/trimesh from requirements-mesh.txt, preloaded on the main thread)
 ```
 
 Tests patch `solidpilot.bridge` (`server.bridge._call_raw`, `server.bridge.call_tool`); tool modules reach

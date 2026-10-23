@@ -1,0 +1,6 @@
+# OPTIONAL: STL/OBJ/PLY mesh reverse engineering for the `analyze_mesh` tool. Without it the tool
+# answers FAILED | MESH_READER_UNAVAILABLE and everything else works unchanged.
+# trimesh is MIT; scipy/numpy are BSD. All are imported lazily and never bundled.
+trimesh>=4.4,<5
+scipy>=1.11,<2
+numpy>=1.26,<3

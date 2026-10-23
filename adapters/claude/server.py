@@ -28,6 +28,15 @@ from solidpilot.tools.compare import *  # noqa: F401,F403
 from solidpilot.tools.graph import *  # noqa: F401,F403
 from solidpilot.tools.design import *  # noqa: F401,F403
 from solidpilot.tools.checkpoints import *  # noqa: F401,F403
+from solidpilot.tools import mesh as _mesh_tools  # noqa: F401
+from solidpilot.tools.mesh import *  # noqa: F401,F403
+
+# numpy/scipy/trimesh must first load on the MAIN thread (numpy's C extensions deadlock when first
+# imported from an MCP worker thread on Windows, ADR-062). A failure only disables analyze_mesh.
+try:
+    _mesh_tools.preload()
+except Exception:  # noqa: BLE001 - startup must survive anything
+    pass
 
 
 # ---------------------------------------------------------------------------

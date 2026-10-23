@@ -38,7 +38,7 @@ The defining idea: the AI works at the **CAD feature level**, not the tool level
 ## LAYERS
 
 ### 1. cad-planner (CAD-neutral) — AI Planning / Intent Layer
-Converts user intent into a CAD-neutral **Feature Graph IR**. Operates at the feature level, never the tool level.
+Converts user intent into a CAD-neutral **Feature Graph IR**. Operates at the feature level, never the tool level. Besides model-authored graphs, deterministic front ends lower inputs to the same IR: the drawing reader (DXF/DWG/PDF) and the mesh reverse-engineering package `cad-planner/mesh/` (STL/OBJ/PLY, exposed as `analyze_mesh`; build creates an ordinary design session, verify re-exports STL and measures deviation).
 - **Phase 1:** realized as the host model (Claude) + the IR schema + a planning prompt. No separate service.
 - **Phase 2:** optional dedicated/local-LLM planner for near-zero cost. Same IR contract.
 - Validates **structure** only (types, params, node references). NOT geometry.
@@ -57,7 +57,7 @@ C# .NET 4.8 REST + COM. The **only** layer allowed to touch SolidWorks COM. Dete
 ### 4. adapters/* — MCP Protocol Bridge
 Exposes the system to a specific AI host over MCP.
 - **Target:** a small set of high-level design-session tools (`design_new`, `design_step`, `design_undo`/`design_redo`, `design_history`) that build and amend the Feature Graph incrementally (+ a few reads).
-- **Phase 1:** still exposes the low-level tools directly (38 today) so the working path runs while the IR vocabulary grows; they collapse into the design tools once the vocabulary and resolver are ready.
+- **Phase 1:** still exposes the low-level tools directly (61 today, including the design-session and `analyze_mesh` tools) so the working path runs while the IR vocabulary grows; they collapse into the design tools once the vocabulary and resolver are ready.
 - `adapters/claude/` is the current implementation. Additional adapters reuse a shared bridge core.
 
 ---

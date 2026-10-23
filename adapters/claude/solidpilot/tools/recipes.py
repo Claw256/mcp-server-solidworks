@@ -40,7 +40,7 @@ _CAD_PLANNER_DIR = CAD_PLANNER_DIR
 _RECIPE_SECTIONS = (
     "contract", "canonicalization", "forward", "mapping", "mapping_part",
     "mapping_sheet_metal", "mapping_assembly", "verification", "reverse",
-    "machined_from_image", "coverage",
+    "machined_from_image", "mesh", "coverage",
 )
 
 
@@ -170,7 +170,7 @@ def _feature_graph_schema_text(profile: str = "all") -> str:
 def get_recipe(
     section: Literal["index", "contract", "canonicalization", "forward", "mapping",
                      "mapping_part", "mapping_sheet_metal", "mapping_assembly", "verification",
-                     "reverse", "coverage", "feature_graph_schema",
+                     "reverse", "mesh", "coverage", "feature_graph_schema",
                      "analysis_artifact_schema"] = "index",
     profile: Literal["all", "part"] = "all",
 ) -> str:

@@ -98,6 +98,7 @@
     <Compile Include="Services\SolidWorksService.cs" />
     <Compile Include="Services\SolidWorksService.Diagnostics.cs" />
     <Compile Include="Services\FeatureErrorNames.cs" />
+    <Compile Include="Services\MeshImportOptions.cs" />
     <Compile Include="Services\SolidWorksService.Checkpoint.cs" />
     <Compile Include="Services\SolidWorksService.FeatureTree.cs" />
     <Compile Include="Services\SolidWorksService.Sketch.cs" />

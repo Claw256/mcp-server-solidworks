@@ -11,13 +11,15 @@
   "output": "→ see execution-response.json"
  },
  "open_document": {
-  "description": "Opens an EXISTING file from disk (counterpart to open_new_part, which makes a blank doc). Native .sldprt/.sldasm/.slddrw open directly by type (from the extension). Foreign formats use a STAGED import (2026-07-09, proven live): OpenDoc6 first; on null (with 3D Interconnect issues OpenDoc6 returns errors=2097152 swFileRequiresRepairError even for valid files) fall back to LoadFile4 = the CLASSIC translator (STEP/IGES/NX .prt proven); as a last resort enable Interconnect (toggle 691) and retry once. as_assembly=true (foreign only): an ASSEMBLY STEP - the classic translator would import it as a MULTIBODY PART, so Interconnect is enabled just for that open (toggle restored after). Makes the opened document active and bumps state_version.",
+  "description": "Opens an EXISTING file from disk (counterpart to open_new_part, which makes a blank doc). Native .sldprt/.sldasm/.slddrw open directly by type (from the extension). Foreign formats use a STAGED import (2026-07-09, proven live): OpenDoc6 first; on null (with 3D Interconnect issues OpenDoc6 returns errors=2097152 swFileRequiresRepairError even for valid files) fall back to LoadFile4 = the CLASSIC translator (STEP/IGES/NX .prt proven); as a last resort enable Interconnect (toggle 691) and retry once. as_assembly=true (foreign only): an ASSEMBLY STEP - the classic translator would import it as a MULTIBODY PART, so Interconnect is enabled just for that open (toggle restored after). MESH files (.stl/.obj/.wrl/.3mf/.off/.ply) honour mesh_as/units: the STL/VRML import preferences are set for that open and ALWAYS restored. Default mesh_as=graphics (a display-only mesh; no bodies, fast). surface/solid make a mesh BREP body (not a faceted-to-faces conversion) - on a dense mesh this can be a HUGE solid body that is slow and heavy, so prefer graphics unless you need the body. Mesh bodies are invisible to analyze_model solid walkers. Makes the opened document active and bumps state_version.",
   "input": {
    "operation_id": "string (required, unique idempotency key)",
    "state_version": "integer (required, must match current execution state)",
    "params": {
     "file_path": "string (required — full path to the file to open; .sldprt/.sldasm/.slddrw native, .ipt/.CATPart/STEP/IGES/Parasolid imported as a part via 3D Interconnect)",
-    "as_assembly": "boolean (optional, default false - foreign files only: import an assembly STEP as a real ASSEMBLY via 3D Interconnect instead of the classic multibody-part import; NOTE on this install OpenDoc6-via-Interconnect currently fails with swFileRequiresRepairError - the fallback path for assembly ground truth is per-part import + STEP-parsed placements)"
+    "as_assembly": "boolean (optional, default false - foreign files only: import an assembly STEP as a real ASSEMBLY via 3D Interconnect instead of the classic multibody-part import; NOTE on this install OpenDoc6-via-Interconnect currently fails with swFileRequiresRepairError - the fallback path for assembly ground truth is per-part import + STEP-parsed placements)",
+    "mesh_as": "string (optional, mesh files only: graphics|surface|solid, default graphics; surface/solid import as a mesh body)",
+    "units": "string (optional, mesh files only: mm|cm|m|in, default mm - the unit the mesh coordinates are in)"
    }
   },
   "output": "→ see execution-response.json — CadState.ActiveDocument = opened doc title; DocumentType = PART/ASSEMBLY/DRAWING; Features[0] = file name"
@@ -411,6 +413,25 @@
    }
   },
   "output": "string: mode='auto' -> either a DIRECT_BUILDABLE plain-text summary or 'NOT_DIRECT | <reason>' + the whole analysis JSON {analysis_version, source, config, sheet (incl. not_read), frame, views[] (each with geometry{lines as {class: [[index,x1,y1,x2,y2],...]}, arcs, circles, ellipses?}, loops[], open_chains[] (multi-segment), open_singles[]?), alignment[], view_graph?, dimensions[], bend_notes[], notes[], frame_notes[], user_description}; mode='ir' -> a Feature Graph IR JSON; mode='build' -> the compile/build result. JSON is serialized without whitespace padding (separators ',' ':')."
+ },
+ "analyze_mesh": {
+  "description": "[ADAPTER-ONLY — no C# case] Reverse-engineers a 3D mesh (.stl/.obj/.ply) into a parametric part through the cad-planner/mesh package (needs adapters/claude/requirements-mesh.txt: trimesh, scipy, numpy; without them every call answers FAILED | MESH_READER_UNAVAILABLE). Modes: analyze (stats, recognised primitives, recommended strategy), plan (lower to a Feature Graph IR saved as <folder>/.solidpilot/<name>.mesh.graph.json), build (plan + build through the same design.build_graph door as analyze_drawing mode='build' — a new design session refined with design_step/design_undo/design_redo; registers volume/bbox expectations for verify_against_interpretation and records the plan transform for verify), verify (exports the design to a temp STL via export_document and reports mean/p95/max surface deviation as % of the bbox diagonal, volume and bbox error, and a pass|marginal|fail verdict). Freeform results are an approximation. Guidance lives in the 'mesh' recipe section.",
+  "input": {
+   "operation_id": "n/a at this level - the build/verify/open calls carry their own operation_id (uuid4)",
+   "state_version": "n/a at this level - the underlying calls thread the adapter's tracked state_version",
+   "params": {
+    "file_path": "string (required - absolute path to the .stl, .obj or .ply mesh)",
+    "mode": "string enum (optional, default 'analyze') - analyze | plan | build | verify; only build and verify touch SolidWorks",
+    "units": "string enum (optional, default 'mm') - the mesh file's unit: mm | cm | m | in (STL carries none)",
+    "stations": "integer (optional, default 0 = automatic) - number of slice stations for a loft strategy",
+    "tolerance_mm": "number (optional, default 0 = automatic, ~0.15% of the bbox diagonal) - fit tolerance for slice fitting",
+    "smooth": "string enum (optional, default 'auto') - auto | off | low | medium | high: smoothing of the mesh before slicing (noisy scans)",
+    "strategy": "string enum (optional, default 'auto') - auto | revolve | extrude | stacked_extrude | loft; auto takes the analysis' recommendation and falls back down the ladder",
+    "reference": "boolean (optional, default false) - build only: also open the mesh as a display-only graphics body in its own document (open_document mesh_as='graphics'); a failure there only warns",
+    "background": "boolean (optional, default false) - start the build as a background job and return a job_id at once (poll job_status); only with mode='build'"
+   }
+  },
+  "output": "string: analyze -> 'MESH ANALYSIS' with mesh stats, segments (planes/cylinders/holes/axisymmetry) and the recommended strategy; plan -> 'MESH PLAN' with strategy, node counts, expected volume/bbox, smoothing block, warnings and the graph file path; build -> the design build result (ends with design_id=... | run_id=...) followed by the plan summary; verify -> 'MESH VERIFY | <name> | verdict=PASS|MARGINAL|FAIL' with deviation, volume and bbox metrics and the next step. Errors are 'FAILED | CODE | message' (MESH_READER_UNAVAILABLE, MESH_READ_FAILED, MESH_PLAN_FAILED, FILE_NOT_FOUND, BAD_MODE, BAD_UNITS, BAD_SMOOTH, BAD_STRATEGY, EXPORT_FAILED)."
  },
  "analyze_slddrw_test": {
   "description": "TEST/REFERENCE ONLY (renamed from analyze_drawing 2026-07-27; a .SLDDRW is SLDPRT-linked and nobody ships one — the shipping reverse path is being rebuilt on DXF/DWG). Analyzes the active NATIVE SolidWorks DRAWING document without modifying it (read-only, does NOT increment state_version). Walks the views (IDrawingDoc.GetFirstView/GetNextView; the first view is the SHEET) and reports each view's name, type (swDrawingViewTypes_e int), scale, sheet position, and its display dimensions (full-name + SI value). Feeds the objective Stage-1 check (do a produced drawing's dims match the model?) and the Stage-2 re-modeling input.",

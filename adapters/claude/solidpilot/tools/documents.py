@@ -57,7 +57,7 @@ def open_new_part(template_path: str = "") -> str:
 # Tool: open_document
 # ---------------------------------------------------------------------------
 @mcp.tool(structured_output=False)
-def open_document(file_path: str, as_assembly: bool = False) -> str:
+def open_document(file_path: str, as_assembly: bool = False, mesh_as: str = "", units: str = "") -> str:
     """Open an EXISTING document from disk (counterpart to open_new_part, which makes a BLANK doc).
     file_path: full path to the file.
       - Native .sldprt / .sldasm / .slddrw open directly.
@@ -67,10 +67,17 @@ def open_document(file_path: str, as_assembly: bool = False) -> str:
         convert to STEP or defer that file.
       - as_assembly=True (foreign files only): the file is an ASSEMBLY STEP — the classic import
         would flatten it to a MULTIBODY PART; this asks for a real assembly import instead.
+      - Mesh files (.stl/.obj/.wrl/.3mf): mesh_as = graphics (default, display-only, fast) | surface |
+        solid (mesh body; can be HUGE and slow on dense meshes); units = mm (default) | cm | m | in.
+        Mesh bodies are invisible to analyze_model solid walkers.
     Makes the opened document active."""
     params = {"file_path": file_path}
     if as_assembly:
         params["as_assembly"] = True
+    if mesh_as:
+        params["mesh_as"] = mesh_as
+    if units:
+        params["units"] = units
     return _call("open_document", params)
 
 

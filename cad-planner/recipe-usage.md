@@ -626,6 +626,61 @@ drawing's iso/views (label them "Image 1: drawing", "Image 2: model").
 **6. Close with an honest ledger:** what was verified (and by text or vision), what was assumed, what could not
 be modelled, and any dimension you could not read.
 
+## mesh — 3D mesh (STL/OBJ/PLY) → parametric part
+
+`analyze_mesh(file_path, mode, units, stations, tolerance_mm, smooth, strategy, reference, background)` turns a
+mesh into an ordinary design session. Needs `pip install -r adapters/claude/requirements-mesh.txt` (else
+`MESH_READER_UNAVAILABLE`). The mesh path must be absolute, on the PC running SolidWorks.
+
+**Workflow**
+1. **Ask first:** the mesh's unit (STL carries none — never guess; `units` = mm|cm|m|in) and the purpose (print,
+   machine, display, study). Purpose sets the tolerance you can accept.
+2. `mode='analyze'` — stats, detected primitives, recommended strategy, auto smoothing level. No CAD change.
+3. `mode='plan'` — lowers to a Feature Graph (saved beside the mesh as `.solidpilot/<name>.mesh.graph.json`) and
+   prints strategy, node counts, expected volume/bbox, smoothing and attempts. No CAD change; re-plan until sane.
+4. `mode='build'` — plan + build as a NEW design (`background=true` for long builds, poll `job_status`). The
+   result is a normal design: refine with `design_step`, back out with `design_undo`/`design_redo`.
+5. `mode='verify'` — exports the active part to STL and compares it with the mesh (needs the build's record, kept
+   in a sidecar beside the mesh, so it works after a restart).
+6. Refine local errors with `design_step`; verify again. Hand over with the numbers and what was approximated.
+
+**Strategy ladder** (`strategy='auto'` picks the first that fits; force one only with a reason):
+`revolve` (axis-symmetric; axis is Y in the build frame) → `extrude` / `stacked_extrude` (prismatic; holes become
+inner loops; axis +Z) → `loft` (freeform: slice sketches along +Z, `stations` of them). The `plan` transform maps
+source coordinates into this build frame; mesh coordinates are not the part's.
+
+**Choosing knobs**
+- `smooth` (revolve and loft only): `auto` (level by face count) is right for scans and noisy tessellation;
+  `off` for clean CAD-exported meshes or when you need sharp-edge fidelity; `low|medium|high` only if the plan
+  shows ripple. Smoothing is feature-preserving (Phong subdivision + Taubin, edges above a dihedral angle pinned)
+  and is dropped automatically if it shrinks volume >0.5%.
+- `stations` (loft): 0 = auto. Raise it (e.g. 24 to 48) where the plan's deviation is in rapidly changing
+  sections; lower it to keep the feature tree light. Each station is a sketch, so cost grows linearly.
+- `tolerance_mm`: 0 = auto. Set it from the purpose (0.1-0.2 print/machine fit, 0.5-1 display). Tighter means
+  more detail and a heavier tree.
+- `reference=true` (build): also opens the source mesh as a display-only graphics document for visual
+  comparison. It is not part of the design and is invisible to `analyze_model`.
+
+**Reading verify:** deviation is reported as a % of the mesh's bbox diagonal (mean / p95 / max), plus volume,
+bbox and area errors, and a verdict. Defaults: pass when mean <= 0.3%, p95 <= 1%, max <= 3%, volume <= 2%,
+bbox <= 1%; `marginal` = a limit is exceeded by under x2.5; `fail` = by more. Mean is overall fit, p95/max are
+local errors (a missed boss, a wrong-side feature), volume tells whether it is hollow or over-filled.
+- `pass`: finish; still state it is an approximation if the plan used loft.
+- `marginal`: re-plan with higher `stations` or `smooth='low'`/`off`, or accept and say which deviation.
+- `fail`: check `units` first (a x25.4 or x1000 error is the usual cause), then the strategy (try another rung),
+  then the plan's warnings. Fix localized misses with `design_step` instead of re-planning the whole part.
+- Also run `verify_against_interpretation()`; build registers the expected volume and bbox for it.
+
+**Limits (say them in the handover)**
+- Cross-axis holes (not along the build axis) are listed in the plan, not modelled: add them with `design_step`.
+- Loft keeps only the largest region per station: separate lobes, detached islands and thin fins are lost.
+- Organic results are approximations, not surface-perfect; sharp edges can round slightly.
+- Mesh bodies (the `reference` document, `mesh_as` imports) are invisible to `analyze_model`; do not measure them.
+- Not exercised against a live SolidWorks yet: sketch-plane orientation, the revolve axis and STL import
+  preferences. Check orientation with `export_image` and one face read-back after the first build.
+- `open_document(file_path=<.stl>, mesh_as='graphics'|'surface'|'solid', units=...)` opens a mesh directly
+  (default graphics = display only; surface/solid need a mesh BREP and can be slow or fail on dense meshes).
+
 ## coverage — Coverage reporting
 
 Every batch/folder run ends with one summary:

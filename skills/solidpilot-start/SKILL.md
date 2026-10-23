@@ -1,6 +1,6 @@
 ---
 name: solidpilot-start
-description: Kick-start a SolidPilot session that rebuilds a SolidWorks 3D part or assembly from 2D input — a dimensioned drawing (PDF, DXF, DWG, SLDDRW) or reference images (game renders, screenshots, photos, concept art, the user's own Blender renders). Use when the user wants to model, recreate, reverse-engineer or fabricate a part or prop from a drawing or from images with the SolidPilot / SolidWorks MCP tools, or says "start a SolidPilot workflow". Also use when the user attaches images and asks to model, rebuild, 3D-print or make a part from them — including props, helmets, armor, gadgets or any shape from a render or screenshot. Runs the preflight, reads the input, asks what the input leaves open, builds, verifies against the input and exports.
+description: Kick-start a SolidPilot session that rebuilds a SolidWorks 3D part or assembly from 2D input — a dimensioned drawing (PDF, DXF, DWG, SLDDRW) reference images (game renders, screenshots, photos, concept art, the user's own Blender renders), or a 3D mesh file (STL, OBJ, PLY — a scan, a downloaded or Blender-exported model). Use when the user wants to model, recreate, reverse-engineer or fabricate a part or prop from a drawing or from images with the SolidPilot / SolidWorks MCP tools, or says "start a SolidPilot workflow". Also use when the user supplies an STL / mesh / OBJ / PLY input and wants it as a parametric, editable SolidWorks part. Also use when the user attaches images and asks to model, rebuild, 3D-print or make a part from them — including props, helmets, armor, gadgets or any shape from a render or screenshot. Runs the preflight, reads the input, asks what the input leaves open, builds, verifies against the input and exports.
 ---
 
 # SolidPilot: 2D input to 3D, kick-start
@@ -74,7 +74,7 @@ Then run the workflow below.
 
 ## 1. Get the input
 
-Two input kinds. Take whatever the user gives you; a drawing plus a reference photo is common — use
+Three input kinds (drawing, reference image, 3D mesh). Take whatever the user gives you; a drawing plus a reference photo is common — use
 both.
 
 ### A. Dimensioned drawing
@@ -104,6 +104,25 @@ a default for each (this is the same list as the first-message template):
 - **material / process** if it changes wall thickness or draft (3D print, sheet, machining);
 - **primary view**: which image is the front when several are given, and which is the source of truth
   when two views disagree.
+
+### C. 3D mesh (STL, OBJ, PLY)
+
+Ask for the file if you were not given one: an **absolute path on the PC running SolidWorks**. Then ask, in
+one short message, with defaults:
+
+- **unit / scale**: STL and most OBJ/PLY files carry no unit. Ask (mm / cm / m / in); do not guess — a wrong
+  unit is the commonest cause of a failed verify. If the user knows one real dimension, use it to confirm;
+- **purpose and fidelity**: print / machine / display / study. Sets `tolerance_mm` (about 0.1-0.2 for fit,
+  0.5-1 for display) and how much smoothing to accept;
+- whether they also want the source mesh opened as a reference (`reference=true`).
+
+Needs `pip install -r adapters/claude/requirements-mesh.txt`; if `MESH_READER_UNAVAILABLE`, tell the user.
+Read `get_recipe(section='mesh')`, then: `analyze_mesh(file_path, mode='analyze', units=...)` →
+`mode='plan'` (check strategy, expected volume/bbox, warnings) → `mode='build'` (a normal design session) →
+`mode='verify'` (surface deviation as % of bbox diagonal, pass/marginal/fail) → refine with `design_step`
+(add the cross-axis holes the plan lists, fix local misses) and verify again. Skip the drawing tools in step 2: the
+mesh path replaces them. The result is an approximation for freeform shapes: report the deviation numbers and
+what was simplified in the handover.
 
 ## 2. Read the input
 

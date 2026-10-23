@@ -23,6 +23,7 @@ The compiler (deterministic) drives this layer over plain REST. In Phase 1 the M
 - One pipeline for every tool call (`ToolPipeline`): tool lookup from the `[Tool]` registry, duplicate replay,
   `state_version` check, dialog guard, post-tool `diagnostics`, timing. A call that exceeds
   `SOLIDPILOT_TOOL_TIMEOUT_S` (default 15 min) answers `TOOL_TIMEOUT` instead of hanging the caller.
+- `open_document` mesh options: for `.stl`/`.obj`/`.ply` files, `mesh_as` = `graphics` (default; display-only graphics body), `surface` or `solid` (mesh BREP body, via the VRML/STL import preference `swVrmlStlImportAsPSMesh`), and `units` = mm|cm|m|in (default mm; STL has no unit). Parsing and validation live in `MeshImportOptions` (pure, unit-tested); invalid values are rejected before any COM call. Mesh bodies are not seen by `analyze_model`. Used by the adapter's `analyze_mesh(reference=true)`; live behaviour of the import preferences is untested.
 - Feature-tree tools for the compiler's incremental design: `feature_tree` (read-only, ordered user-feature names;
   excludes origin, default planes and system folders) and `truncate_feature_tree(keep_count)` (destructive: deletes
   later features last-first, rebuilds once, bumps `state_version`). Execution-only: no model-facing adapter tool.

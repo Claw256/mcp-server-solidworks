@@ -27,6 +27,10 @@ SolidPilot solves this by **raising the level of abstraction**:
 
 Because the IR is the spine, the same machinery runs **backwards**: a 2D technical drawing is design intent expressed in two dimensions, so it can be read into the same IR and built.
 
+### From a 3D mesh (STL / OBJ / PLY) to a parametric part
+
+Hand SolidPilot a **mesh** — a scan, a download, a Blender export — and `analyze_mesh` reverse-engineers it into an editable part. It climbs a strategy ladder: `revolve` (axis-symmetric) → `extrude` / stacked extrude (prismatic, holes as inner loops) → a freeform `loft` of slice sketches. Noisy meshes are smoothed with a feature-preserving filter (sharp edges are pinned) before slicing. The modes are `analyze` → `plan` → `build` → `verify`: `build` creates an ordinary design session, so `design_step` / `design_undo` / `design_redo` refine it, and `verify` exports the part to STL and reports surface deviation as a % of the bbox diagonal with a pass / marginal / fail verdict. STL files carry no unit, so you state it (`units`). Freeform results are approximations; cross-axis holes are listed but not modelled. Mesh support is an optional install: `pip install -r adapters/claude/requirements-mesh.txt` (numpy, scipy, trimesh). `open_document` also opens a mesh directly (`mesh_as='graphics'|'surface'|'solid'`, `units`). The workflow is in `get_recipe('mesh')`.
+
 ### From a 2D drawing file to a solid part
 
 Hand SolidPilot a **.DXF or .DWG** — the file a supplier or a customer actually sends, with no model behind it — and it reconstructs the part:
@@ -49,9 +53,10 @@ flowchart TD
     U(["User + AI client<br/>Claude · OpenClaw · OpenAI · local LLM"])
 
     subgraph ADAPT["adapters/* — MCP bridge · MCP BOUNDARY = top"]
-        LOW["38 low-level tools<br/>sketch · extrude · sheet-metal · drawing · assembly · analyze"]
+        LOW["61 tools (low-level + design + mesh)<br/>sketch · extrude · sheet-metal · drawing · assembly · analyze"]
         RIR["rebuild_from_ir · save_analysis · compare_parts/assemblies"]
         SFG["design_new / design_step<br/>forward design session"]
+        MSH["analyze_mesh<br/>STL/OBJ/PLY front end"]
     end
 
     IR["Feature Graph IR<br/>feature-graph.schema.json<br/>(cad-planner · CAD-neutral)"]
@@ -104,7 +109,7 @@ The `adapters/` layer is provider-specific and replaceable. Because the executio
 
 ## Tool List
 
-The system currently exposes **60 tools** for *doing* and **14 MCP resources** (plus one MCP prompt, `pdf_drawing_to_part`) for *reading* — the recipe is served through BOTH `get_recipe(section)` and `recipe://usage/*`, because MCP resources sit in the client's action space and not every host lets a model reach one. A contract test keeps both surfaces honest — the adapter against the execution contract, and every resource URI mentioned in the adapter against what is actually registered (see [CONTRIBUTING.md](CONTRIBUTING.md)). Most tools are low-level CAD operations; a few (`save_analysis`, `rebuild_from_ir`, `design_new`, `design_step`, `design_undo`, `design_redo`, `design_history`, `compare_parts`, `compare_assemblies`) drive the analysis / IR round-trip described below. Building from a 2D drawing is interactive: `analyze_drawing` raises typed **open questions** (an ambiguous bend note, a missing thickness) that `ask_user` puts to you instead of guessing, every build prints an **assumptions ledger**, and `verify_against_interpretation()` checks the finished model against the drawing itself. `checkpoint` saves/reopens copies to try alternatives, every graph build records a `run_id` that `replay_run` reproduces, and long builds can run as background jobs (`background=true`, `job_status`). All lengths are in meters (SolidWorks internal units).
+The system currently exposes **61 tools** for *doing* and **14 MCP resources** (plus one MCP prompt, `pdf_drawing_to_part`) for *reading* — the recipe is served through BOTH `get_recipe(section)` and `recipe://usage/*`, because MCP resources sit in the client's action space and not every host lets a model reach one. A contract test keeps both surfaces honest — the adapter against the execution contract, and every resource URI mentioned in the adapter against what is actually registered (see [CONTRIBUTING.md](CONTRIBUTING.md)). Most tools are low-level CAD operations; a few (`save_analysis`, `rebuild_from_ir`, `design_new`, `design_step`, `design_undo`, `design_redo`, `design_history`, `compare_parts`, `compare_assemblies`) drive the analysis / IR round-trip described below. Building from a 2D drawing is interactive: `analyze_drawing` raises typed **open questions** (an ambiguous bend note, a missing thickness) that `ask_user` puts to you instead of guessing, every build prints an **assumptions ledger**, and `verify_against_interpretation()` checks the finished model against the drawing itself. `checkpoint` saves/reopens copies to try alternatives, every graph build records a `run_id` that `replay_run` reproduces, and long builds can run as background jobs (`background=true`, `job_status`). All lengths are in meters (SolidWorks internal units).
 
 The **resources** carry the rule set and the contracts, not behaviour: `recipe://usage/index` plus one static `recipe://usage/<section>` per rule section, and `schema://feature-graph` + `schema://analysis-artifact`. The split is deliberate — a tool's description is paid on every single turn whether or not it is used, while a resource body costs only when read, so near-static reference material belongs on the resource side.
 
@@ -181,6 +186,9 @@ Claude reads a PDF or image drawing natively; SolidPilot makes that reliable ins
 - `verify_against_interpretation` — mechanical PASS/FAIL of the built part against your interpretation (overall size, volume, holes, centre of gravity, all in mm), with deltas. The centre-of-gravity check is the one that catches a mirrored feature.
 - `export_image` — a picture of the active model (isometric/front/top/…, up to 4 views) returned as image content, to compare with the source drawing.
 - `analyze_model(bbox)` — exact overall extents; cylindrical faces in `analyze_model(faces)` now say whether they are a hole or a boss.
+
+### 3D mesh → part
+- `analyze_mesh` — mesh reverse-engineering front end (`mode`: analyze | plan | build | verify; `units`, `stations`, `tolerance_mm`, `smooth`, `strategy`, `reference`, `background`). Optional install: `adapters/claude/requirements-mesh.txt`. Mesh bodies are invisible to `analyze_model`.
 
 ### Export
 - `export_document` — STEP, IGES, STL, **PDF, DWG, DXF** (PDF/DWG/DXF require a drawing document).
