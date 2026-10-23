@@ -8,12 +8,12 @@ The communication bridge between the AI host (Claude) and the system. Pure trans
 
 This is the key architectural decision: **MCP is the boundary where the AI host meets the system — not an internal transport.**
 
-- **Target (Feature Graph architecture):** the adapter exposes **one** high-level tool, `submit_feature_graph(graph)` (plus a few read-only tools like `verify_state`). The host model (Claude) emits the CAD-neutral IR; everything below the IR (compiler → resolver → execution) is deterministic and is reached over plain REST, **not** MCP.
-- **Phase 1 (current, transitional):** the adapter still exposes the low-level tools directly (52 today including the orchestration tools, plus adapter-only orchestration tools like `save_analysis` / `rebuild_from_ir`) so the working end-to-end path keeps running while the IR vocabulary grows. The low-level surface collapses into `submit_feature_graph` once the vocabulary and resolver are ready.
+- **Target (Feature Graph architecture):** the adapter exposes a small set of high-level design-session tools (`design_new`, `design_step`, `design_undo`, `design_redo`, `design_history`), plus a few read-only tools like `verify_state`. The host model (Claude) emits the CAD-neutral IR; everything below the IR (compiler → resolver → execution) is deterministic and is reached over plain REST, **not** MCP.
+- **Phase 1 (current, transitional):** the adapter still exposes the low-level tools directly (60 today including the orchestration tools, plus adapter-only orchestration tools like `save_analysis` / `rebuild_from_ir`) so the working end-to-end path keeps running while the IR vocabulary grows. The low-level surface collapses into the design tools once the vocabulary and resolver are ready.
 - **The recipe/contract prose is a RESOURCE surface, not tools** (ADR-069, 2026-07-30): 13 read-only resources over `cad-planner/` (`recipe://usage/*`, `schema://*`). Tools are for *doing*; resources are for *reading* near-static, caller-independent content. The distinction is economic as well as conceptual — a tool's docstring is paid on every turn, a resource's body only when read.
 
 ```
-Target:   Claude ──MCP: submit_feature_graph(graph)──▶ [adapter] ──REST──▶ compiler ──▶ execution
+Target:   Claude ──MCP: design_new / design_step──▶ [adapter] ──REST──▶ compiler ──▶ execution
 Phase 1:  Claude ──MCP: low-level tools ──────────▶ [adapter] ──REST──▶ execution
           Claude ──MCP: rebuild_from_ir──────────────▶ [adapter] ─(in-process pycompiler)─REST──▶ execution
 ```
@@ -30,6 +30,8 @@ solidpilot/
                              resync/retry path, _call (mapped text) / _call_raw (raw dict), session facts
   runs.py                    run records: derived operation ids, manifests (graph + sha256 + environment),
                              log correlation — what replay_run reproduces
+  design.py                  design sessions: journal of graph snapshots (.solidpilot/designs/), reconcile
+                             (common prefix -> truncate feature tree -> recompile suffix), undo/redo, drift check
   jobs.py                    background jobs for long builds (one at a time, progress, cancel)
   clarify.py / expectations.py   open drawing questions + what the last build implies the part should measure
   surface.py                 server instructions, MCP annotations (readOnly/destructive/idempotent)

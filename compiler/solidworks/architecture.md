@@ -41,6 +41,11 @@ and is extractable to a standalone service later. Modules map to the table above
 `ir_schema.py` (structural validation), `compiler.py` (orchestration + feature-level failure
 mapping), with an offline test suite (`pycompiler/tests/`, fake port — runs in CI, no
 SolidWorks needed). Reached in production through the adapter's `rebuild_from_ir` tool; the
-direct `submit_feature_graph` door exists as a commented-out test tool. Both doors run this
-same compiler. The low-level MCP tools remain the primary build path until the vocabulary and
+adapter drives it through the same entry point (the adapter's `design_*` session tools are the live
+incremental door). `compile_and_run(port, graph, start_index=0, seed_node_features=None,
+apply_material=None)` is incremental: the whole graph is validated but only `nodes[start_index:]`
+run, with earlier nodes' runtime names supplied via `seed_node_features`. Each node_log entry
+records every created name (`features`) and the feature-tree size after it (`boundary`, from the
+port's optional `tree_size()`); `CompileResult.node_features` is the final id -> name map.
+Graph-level `material` is applied only when `apply_material` is true (default: start_index == 0). The low-level MCP tools remain the primary build path until the vocabulary and
 a durable (edit-surviving) reference resolver are ready.

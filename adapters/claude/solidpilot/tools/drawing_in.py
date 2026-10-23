@@ -40,7 +40,7 @@ def _summarise_direct(art, summary, graph):
     """The DIRECT_BUILDABLE result: everything needed to JUDGE the build, and nothing else.
 
     The contour deliberately stays out. A real laser outline is scores of segments; showing it and
-    then having the model echo it back into submit_feature_graph would cost the tokens twice over
+    then having the model echo it back into design_new would cost the tokens twice over
     and invite a transcription error in between — which is the whole reason the lowering exists."""
     b, th = summary["blank"], summary["thickness"]
     cuts = ", ".join("%gx%g @ (%g,%g)"
@@ -223,7 +223,7 @@ def analyze_drawing(file_path: str, save_analysis: bool = True,
         (the normal path for machined parts); the reason names exactly which decision the drawing
         left open. You get sheet/frame, every view complete (boxes, size, geometry, loops with
         their `seq`, open chains), alignment, view_graph, every dimension, bend note and note, in
-        one answer. Read it per get_recipe('reverse') and build with submit_feature_graph.
+        one answer. Read it per get_recipe('reverse') and build with design_new/design_step.
 
     OPEN QUESTIONS — where the drawing leaves a decision to a person (a bend note that matches two lines,
     a missing or conflicting thickness) the answer ends with an `OPEN QUESTIONS` block: ids, evidence,
@@ -238,7 +238,7 @@ def analyze_drawing(file_path: str, save_analysis: bool = True,
 
     mode='ir'    — the lowered Feature Graph IR, without building. For inspection or saving.
     mode='build' — lower and BUILD, through the same deterministic pycompiler as
-                   submit_feature_graph. **CHANGES GEOMETRY.** Opens a new
+                   design_step; the result is a design you can keep editing. **CHANGES GEOMETRY.** Opens a new
                    part. Re-derives from the same file, so it needs no cached graph — but verify
                    the sha256 in the summary is the file you looked at.
 
@@ -487,14 +487,14 @@ def analyze_drawing(file_path: str, save_analysis: bool = True,
     if not verdict["direct"]:
         if mode in ("ir", "build"):
             return (f"FAILED | NOT_DIRECTLY_BUILDABLE | {verdict['reason']} | {verdict['detail']} — "
-                    f"call analyze_drawing(mode='auto') and build with submit_feature_graph.")
+                    f"call analyze_drawing(mode='auto') and build with design_new/design_step.")
         # ONE SHAPE, the whole analysis (payload phase 1, 2026-09-07). This used to be a SUMMARY
         # with the geometry pulled back per view, and the split was retired on its own measurement:
         # once the wire form landed, the complete artifact came out smaller on all 10 samples than
         # the summary plus the pulls it made necessary (f-3: 14.0 KB against 28.7).
         return (f"NOT_DIRECT | {verdict['reason']} | {verdict['detail']}\n"
                 f"The whole analysis is below. Read it per get_recipe(section='reverse') and build "
-                f"with submit_feature_graph.{_advisories(art)}{qtail}\n{full}")
+                f"with design_new/design_step.{_advisories(art)}{qtail}\n{full}")
 
     try:
         graph = _draw.lower_flat_pattern(art, cfg, verdict)

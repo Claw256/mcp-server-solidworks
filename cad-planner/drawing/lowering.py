@@ -1,7 +1,7 @@
 """lowering.py -- the direct-buildable GATE + flat-pattern -> Feature Graph IR transcription.
 
 WHY A CONVERTER AND NOT A PROMPT: transcribing an 80-segment laser contour by hand costs tokens
-twice (once to read it, once to echo it into submit_feature_graph) and invites transcription errors
+twice (once to read it, once to echo it into design_new) and invites transcription errors
 in between. Contour geometry is pure data, so it is lowered here and NEVER enters the model's
 context. The model gets a ~10-line summary, judges it, and authorises the build with one short call.
 
@@ -13,7 +13,7 @@ exactly today's behaviour -- so the gate is deliberately conservative.
 Scope v1: sheet-metal FLAT PATTERNS. A plain plate is excluded on purpose (its thickness and which
 view carries the profile are interpretive), and so is any blank whose fixed point cannot be pinned.
 
-The emitted graph goes through the SAME pycompiler as submit_feature_graph and rebuild_from_ir --
+The emitted graph goes through the SAME pycompiler as design_step and rebuild_from_ir --
 a third door, never a second compiler (IR-ADR-005).
 """
 from __future__ import annotations

@@ -6,7 +6,14 @@ failure the run STOPS, no rollback is attempted, and the result reports how far 
 feature-level error. The caller (the adapter tool) resyncs state_version afterwards either way.
 
 Public API (consumed by pycompiler/__init__.py and the adapter):
-    compile_and_run(port, graph) -> CompileResult
+    compile_and_run(port, graph, start_index=0, seed_node_features=None, apply_material=None)
+        -> CompileResult
+
+Incremental runs: the WHOLE graph is always validated, but only nodes[start_index:] execute.
+`seed_node_features` ({node_id: name | [names]}) pre-populates the runtime name map for the
+nodes before start_index (a list seeds its FIRST name — the one placeholders use). The graph-level
+`material` is applied when `apply_material` is True; None (default) means "only when
+start_index == 0", so a resumed run does not re-apply it unless the caller says so.
 """
 import math
 
@@ -29,6 +36,8 @@ class CompileResult(object):
         self.node_log = []                 # [{id, type, status, ops:[{tool, note, state_version}]}]
         self.final_state_version = None
         self.error = None                  # {code, message, [node_id, node_type, step]}
+        self.start_index = 0               # first node index executed in this run
+        self.node_features = {}            # full final {node_id: name} map, seed included
 
     def to_dict(self):
         return {
@@ -39,6 +48,8 @@ class CompileResult(object):
             "final_state_version": self.final_state_version,
             "error": self.error,
             "node_log": self.node_log,
+            "start_index": self.start_index,
+            "node_features": self.node_features,
         }
 
     def summary(self):
@@ -58,7 +69,12 @@ class CompileResult(object):
                    self.nodes_completed, self.nodes_total))
 
 
-def compile_and_run(port, graph):
+def compile_and_run(port, graph, start_index=0, seed_node_features=None, apply_material=None):
+    """Compile+run graph["nodes"][start_index:] (the whole graph is validated first).
+
+    node_log entries gain `features` (every feature/sketch name the node's ops created, ordered,
+    de-duplicated) and `boundary` (port.tree_size() after the node, or None when the port has no
+    tree_size()). result.node_features is the final {node_id: name} map including the seed."""
     result = CompileResult()
 
     # 1) Structural validation. If it fails, NO execution call is made.
@@ -70,6 +86,15 @@ def compile_and_run(port, graph):
 
     nodes = graph["nodes"]
     result.nodes_total = len(nodes)
+    if (not isinstance(start_index, int) or isinstance(start_index, bool)
+            or start_index < 0 or start_index > len(nodes)):
+        result.status = "FAILED"
+        result.error = {"code": "BAD_START_INDEX",
+                        "message": "start_index %r outside 0..%d" % (start_index, len(nodes))}
+        return result
+    result.start_index = start_index
+    if apply_material is None:
+        apply_material = (start_index == 0)
 
     # 2) Seed state_version from the authoritative source (also the basis for the post-run resync).
     try:
@@ -83,10 +108,18 @@ def compile_and_run(port, graph):
     # non-empty cadState.features[0] among its ops) so later nodes can reference it by node id
     # (lowering.node_feature — e.g. a circular_pattern's seed), localization-proof.
     node_features = {}
-    for node in nodes:
+    for sid, sval in (seed_node_features or {}).items():
+        name = (sval[0] if sval else None) if isinstance(sval, (list, tuple)) else sval
+        if name:
+            node_features[sid] = name
+    result.node_features = node_features
+    tree_size = getattr(port, "tree_size", None)
+    for node in nodes[start_index:]:
         nid = node.get("id")
         ntype = node.get("type")
-        rec = {"id": nid, "type": ntype, "status": "PENDING", "ops": []}
+        rec = {"id": nid, "type": ntype, "status": "PENDING", "ops": [], "features": [],
+               "boundary": None}
+        created = rec["features"]
         try:
             planned = {}                      # side-channel from _plan_node (e.g. a hole's frame)
             ops = _plan_node(port, node, sv, node_features, planned)  # may do a live (read-only) resolve
@@ -121,6 +154,9 @@ def compile_and_run(port, graph):
                 sv = _advance(resp, sv, nid, ntype, op)
                 last_resp = resp
                 feats = ((resp.get("cadState") or {}).get("features")) or []
+                for fname in feats:
+                    if isinstance(fname, str) and fname and fname not in created:
+                        created.append(fname)
                 if nid and feats and feats[0]:
                     node_features[nid] = feats[0]
                 if op.tool == "create_sketch":
@@ -131,6 +167,8 @@ def compile_and_run(port, graph):
                     ask = (resp.get("cadState") or {}).get("activeSketch")
                     if nid and ask:
                         node_features[nid] = ask
+                    if ask and ask not in created:
+                        created.append(ask)
                 if _echoes_frame(op) and decl_frame:
                     # The node records the ORIGINAL sketch's frame; the response carries the
                     # frame the op just MEASURED (create_sketch — or edge_flange_sketch, whose
@@ -149,6 +187,7 @@ def compile_and_run(port, graph):
                     frame_fn, frame_mirror = _sketch_frame_transform(decl_frame, measured)
                 rec["ops"].append({"tool": op.tool, "note": op.note, "state_version": sv})
             rec["status"] = "COMPLETED"
+            rec["boundary"] = _read_boundary(tree_size)
             result.node_log.append(rec)
             result.nodes_completed += 1
         except FeatureError as fe:
@@ -173,7 +212,7 @@ def compile_and_run(port, graph):
     # 4) Graph-level material (v0.7.0) — document state, applied AFTER the geometry so a
     # material failure never aborts the build mid-tree. Part graphs only (validation enforced).
     material = graph.get("material")
-    if material is not None:
+    if material is not None and apply_material:
         rec = {"id": "_material", "type": "material", "status": "PENDING", "ops": []}
         try:
             for op in lowering.lower_material(material):
@@ -202,6 +241,17 @@ def compile_and_run(port, graph):
 
     result.final_state_version = sv
     return result
+
+
+def _read_boundary(tree_size):
+    """Feature-tree size (ordered user features) via the port's optional tree_size(); None when
+    the port lacks it or the read fails (boundaries are advisory, never fatal)."""
+    if tree_size is None:
+        return None
+    try:
+        return int(tree_size())
+    except Exception:
+        return None
 
 
 def _plan_node(port, node, state_version, node_features, planned=None):

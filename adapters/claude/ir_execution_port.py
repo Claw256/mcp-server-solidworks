@@ -51,11 +51,31 @@ class AdapterExecutionPort(ExecutionPort):
     def get_state(self):
         return get_state()
 
+    def feature_names(self):
+        """Ordered user-feature names of the active document (execution tool `feature_tree`)."""
+        resp = self.execute("feature_tree", {}, get_state())
+        if (resp or {}).get("status") != "COMPLETED":
+            raise RuntimeError("feature_tree failed: %s" % ((resp or {}).get("error") or resp))
+        return list(((resp.get("cadState") or {}).get("features")) or [])
 
-def run_feature_graph(graph):
+    def tree_size(self):
+        return len(self.feature_names())
+
+    def truncate(self, keep_count):
+        """Delete user features beyond the first keep_count; returns the NEW state_version."""
+        resp = self.execute("truncate_feature_tree", {"keep_count": int(keep_count)}, get_state())
+        if (resp or {}).get("status") != "COMPLETED":
+            raise RuntimeError("truncate_feature_tree failed: %s" % ((resp or {}).get("error") or resp))
+        return resp.get("stateVersion")
+
+
+def run_feature_graph(graph, start_index=0, seed_node_features=None, apply_material=None, port=None):
     """Compile + run a Feature Graph IR (dict) against the live execution layer.
 
-    Returns a pycompiler CompileResult. Does NOT touch the bridge's state_version — the
-    caller (server.submit_feature_graph) resyncs that afterwards via GET /state (first-class).
+    Returns a pycompiler CompileResult. start_index / seed_node_features / apply_material run only
+    the tail of the graph (see compile_and_run); `port` substitutes the execution port (tests).
+    Does NOT touch the bridge's state_version -- the caller (solidpilot.design) resyncs it afterwards
+    via GET /state.
     """
-    return compile_and_run(AdapterExecutionPort(), graph)
+    return compile_and_run(port or AdapterExecutionPort(), graph, start_index=start_index,
+                           seed_node_features=seed_node_features, apply_material=apply_material)

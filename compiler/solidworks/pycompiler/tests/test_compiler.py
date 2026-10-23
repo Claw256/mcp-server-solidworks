@@ -1657,6 +1657,139 @@ def test_countersink_non_90_off_the_datum_planes_is_refused():
     assert "extrude_feature" not in [t for (t, _p) in port.calls][3:]
 
 
+# --- incremental compile (start_index / seeds / features / boundaries) -----------------------
+
+class _TreePort(FakePort):
+    """FakePort with the optional tree_size(): +1 per feature-creating write (extrude / pattern)."""
+
+    def __init__(self, *a, **kw):
+        FakePort.__init__(self, *a, **kw)
+        self._tree = 0
+
+    def tree_size(self):
+        return self._tree
+
+    def execute(self, tool, params, state_version):
+        resp = FakePort.execute(self, tool, params, state_version)
+        if resp.get("status") == "COMPLETED" and tool in ("extrude_feature", "create_pattern"):
+            self._tree += 1
+        return resp
+
+
+_PATTERN_GRAPH = {
+    "schema_version": "0.5.1-draft", "units": "meters",
+    "material": {"name": "1060 Alloy"},
+    "nodes": [
+        {"id": "b1", "type": "box", "width": 0.05, "depth": 0.05, "height": 0.01},
+        {"id": "s2", "type": "sketch", "ref": {"datum": "top", "offset": 0.01},
+         "profile": [{"kind": "circle", "diameter": 0.008, "cx": 0.015, "cy": 0.0}]},
+        {"id": "e2", "type": "extrude", "sketch": "s2", "operation": "cut", "end": "through_all"},
+        {"id": "p1", "type": "circular_pattern", "feature": "e2",
+         "axis": {"datums": ["front", "right"]}, "count": 4, "angle_deg": 360.0, "equal_spacing": True},
+    ],
+}
+
+
+def test_incremental_default_unchanged_and_records_features_boundaries():
+    port = FakePort()
+    r = compile_and_run(port, EXAMPLE)
+    assert r.status == "COMPLETED" and r.start_index == 0
+    assert [e["boundary"] for e in r.node_log] == [None, None]    # no tree_size on this port
+    assert r.node_log[0]["features"] == ["Çizim1", "Ekstrüzyon3"]  # sketch name + extrude name
+    assert r.node_features["n1"] == "Ekstrüzyon3"                  # last features[0], as before
+    d = r.to_dict()
+    assert d["node_features"] == r.node_features and d["start_index"] == 0
+
+    r2 = compile_and_run(_TreePort(), EXAMPLE)
+    assert [e["boundary"] for e in r2.node_log] == [1, 2]
+
+
+def test_incremental_start_index_skips_earlier_nodes_but_validates_all():
+    full = FakePort()
+    compile_and_run(full, _PATTERN_GRAPH)
+    port = FakePort()
+    r = compile_and_run(port, _PATTERN_GRAPH, start_index=2,
+                        seed_node_features={"e2": "Seed-Cut"})
+    assert r.status == "COMPLETED", r.to_dict()
+    assert [e["id"] for e in r.node_log] == ["e2", "p1"]          # no _material: start_index > 0
+    assert r.nodes_total == 4 and r.nodes_completed == 2 and r.start_index == 2
+    assert len(port.calls) < len(full.calls)
+    # the resumed e2 re-created the cut, so the pattern seeds on the NEW runtime name
+    assert port.calls[-1][1]["pattern_type"] == "circular"
+    # whole graph validated even when the invalid node is before start_index
+    bad = json.loads(json.dumps(_PATTERN_GRAPH))
+    bad["nodes"][0]["type"] = "nonsense"
+    port = FakePort()
+    r = compile_and_run(port, bad, start_index=2)
+    assert r.status == "FAILED" and r.error["code"] == "VALIDATION_FAILED" and port.calls == []
+    r = compile_and_run(FakePort(), EXAMPLE, start_index=9)
+    assert r.status == "FAILED" and r.error["code"] == "BAD_START_INDEX"
+
+
+def test_incremental_seed_resolves_pattern_loft_and_mirror_from_an_earlier_run():
+    port = FakePort()
+    r = compile_and_run(port, _PATTERN_GRAPH, start_index=3,
+                        seed_node_features={"e2": ["SeedCut", "Other"]})   # list -> first name
+    assert r.status == "COMPLETED", r.to_dict()
+    assert [c[0] for c in port.calls][-1] == "create_pattern"
+    assert any(c[1].get("feature_name") == "SeedCut" or "SeedCut" in json.dumps(c[1])
+               for c in port.calls)
+    assert r.node_features["e2"] == "SeedCut"                     # seed carried into the result
+
+    loft = {"schema_version": "0.5.4-draft", "units": "meters", "nodes": [
+        {"id": "b1", "type": "box", "width": 0.05, "depth": 0.05, "height": 0.045},
+        {"id": "s_lo", "type": "sketch", "ref": {"datum": "front", "offset": 0.045},
+         "profile": [{"kind": "circle", "diameter": 0.025}]},
+        {"id": "s_hi", "type": "sketch", "ref": {"datum": "front", "offset": 0.065},
+         "profile": [{"kind": "circle", "diameter": 0.01}]},
+        {"id": "l1", "type": "loft", "profiles": ["s_lo", "s_hi"]}]}
+    port = FakePort()
+    r = compile_and_run(port, loft, start_index=3,
+                        seed_node_features={"s_lo": "SketchA", "s_hi": "SketchB"})
+    assert r.status == "COMPLETED", r.to_dict()
+    assert json.loads(port.calls[-1][1]["profiles"]) == ["SketchA", "SketchB"]
+    # unseeded -> clear failure, not a crash
+    r = compile_and_run(FakePort(), loft, start_index=3)
+    assert r.status == "FAILED" and r.error["code"] == "NODE_FEATURE_UNAVAILABLE"
+
+    mir = {"schema_version": "0.5.5-draft", "units": "meters", "nodes": [
+        {"id": "s1", "type": "sketch", "ref": {"datum": "front"},
+         "profile": [{"kind": "rectangle", "width": 0.1, "height": 0.06}]},
+        {"id": "e1", "type": "extrude", "sketch": "s1", "operation": "boss",
+         "end": "blind", "depth": 0.01},
+        {"id": "m1", "type": "mirror", "plane": {"datum": "right"}, "features": ["e1"]}]}
+    port = FakePort()
+    r = compile_and_run(port, mir, start_index=2, seed_node_features={"e1": "Boss-Extrude1"})
+    assert r.status == "COMPLETED", r.to_dict()
+    assert json.loads(port.calls[-1][1]["features_json"]) == ["Boss-Extrude1"]
+
+
+def test_incremental_material_follows_start_index_unless_overridden():
+    def mats(**kw):
+        port = FakePort()
+        r = compile_and_run(port, _PATTERN_GRAPH, **kw)
+        assert r.status == "COMPLETED", r.to_dict()
+        return any(c[0] == "set_part_material" for c in port.calls)
+    seed = {"e2": "X"}
+    assert mats() is True
+    assert mats(start_index=3, seed_node_features=seed) is False
+    assert mats(start_index=3, seed_node_features=seed, apply_material=True) is True
+    assert mats(apply_material=False) is False
+
+
+def test_incremental_boundaries_relative_to_live_tree():
+    port = _TreePort()
+    r = compile_and_run(port, _PATTERN_GRAPH, start_index=0)
+    full_boundaries = [e["boundary"] for e in r.node_log if e["id"] != "_material"]
+    assert full_boundaries == [1, 1, 2, 3]
+    # Resume on the same port (tree already holds the first 2 features): boundaries continue.
+    port2 = _TreePort()
+    port2._tree = 1
+    r2 = compile_and_run(port2, _PATTERN_GRAPH, start_index=1,
+                         seed_node_features={"b1": "Boss-Extrude1"})
+    assert [e["boundary"] for e in r2.node_log if e["id"] != "_material"] == [1, 2, 3]
+
+
 _TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
 
 

@@ -18,7 +18,7 @@ The defining idea: the AI works at the **CAD feature level**, not the tool level
                   ▼
           Feature Graph IR                   ← cad-planner/contracts/feature-graph.schema.json
                   │
-   ══════════════ MCP BOUNDARY ══════════════  ← host submits IR via ONE tool: submit_feature_graph(graph)
+   ══════════════ MCP BOUNDARY ══════════════  ← host builds IR via design_new / design_step (undo/redo)
                   │
                   ▼
       Deterministic CAD Compiler             ← compiler/solidworks (NO LLM, NO MCP)
@@ -56,8 +56,8 @@ C# .NET 4.8 REST + COM. The **only** layer allowed to touch SolidWorks COM. Dete
 
 ### 4. adapters/* — MCP Protocol Bridge
 Exposes the system to a specific AI host over MCP.
-- **Target:** one high-level tool `submit_feature_graph(graph)` (+ a few reads).
-- **Phase 1:** still exposes the low-level tools directly (38 today) so the working path runs while the IR vocabulary grows; they collapse into the IR tool once the vocabulary and resolver are ready.
+- **Target:** a small set of high-level design-session tools (`design_new`, `design_step`, `design_undo`/`design_redo`, `design_history`) that build and amend the Feature Graph incrementally (+ a few reads).
+- **Phase 1:** still exposes the low-level tools directly (38 today) so the working path runs while the IR vocabulary grows; they collapse into the design tools once the vocabulary and resolver are ready.
 - `adapters/claude/` is the current implementation. Additional adapters reuse a shared bridge core.
 
 ---

@@ -500,9 +500,25 @@ namespace SolidworksExecution.Services
             try
             {
                 var modelDoc = _solidWorks.IActiveDoc2 as IModelDoc2;
+                // Connected but nothing open is a valid state to report, not a failure.
                 if (modelDoc == null)
-                    return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
-                        "NO_ACTIVE_DOCUMENT", "No active document found in SolidWorks.");
+                    return new ExecutionResponse
+                    {
+                        OperationId = request.OperationId,
+                        Status = "COMPLETED",
+                        Verified = true,
+                        StateVersion = _guard.GetCurrentStateVersion(),
+                        CadState = new CadState
+                        {
+                            StateVersion = _guard.GetCurrentStateVersion(),
+                            ActiveDocument = null,
+                            DocumentType = "NONE",
+                            ActiveSketch = null,
+                            Features = new List<string>(),
+                            Dimensions = new List<string>()
+                        },
+                        Error = null
+                    };
 
                 var featureNames = new List<string>();
                 object[] rawFeatures = modelDoc.FeatureManager.GetFeatures(true) as object[];

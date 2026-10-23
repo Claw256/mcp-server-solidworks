@@ -1,7 +1,7 @@
 import hashlib
 import json
 import os
-from solidpilot import bridge
+from solidpilot import design
 from solidpilot import jobs
 from solidpilot import runs
 from solidpilot.app import mcp
@@ -15,7 +15,7 @@ def rebuild_from_ir(artifact_path: str, fresh_document: bool = True, background:
     """Rebuild a part from its analysis artifact's Feature Graph IR — the verification half of
     the round-trip ("the LLM proposes, the round-trip decides"). Reads
     `<...>.analysis.json`, takes `ir.graph`, and executes it through the SAME deterministic
-    pycompiler as the forward door submit_feature_graph (two doors, ONE compiler — never forked).
+    pycompiler as design_new/design_step (two doors, ONE compiler — never forked).
 
     fresh_document (default True): open a NEW blank part first — the normal round-trip flow
         (rebuild fresh, then compare_parts against the original). Pass False only if you have
@@ -25,8 +25,9 @@ def rebuild_from_ir(artifact_path: str, fresh_document: bool = True, background:
     was written (hash mismatch) the result carries source_stale=true — re-run save_analysis and
     regenerate the IR rather than trusting a stale graph.
 
-    Returns the compiler's per-node summary (COMPLETED n/n, or the feature-level error and how
-    far it got — partial geometry may remain; CAD ops are not transactional). Afterwards, verify
+    Returns the compiler's per-node summary (COMPLETED n/n, or the feature-level error; a failed
+    build is rolled back, leaving the new design at step 0). The result ends with design_id=...
+    so the part can be edited with design_step. Afterwards, verify
     with compare_parts and only then label the artifact's ir.verification. If you are GENERATING
     the ir.graph yourself, read the MCP resource `recipe://usage/index` first — it indexes the
     mapping/canonicalization rules the compiler expects.
@@ -71,130 +72,27 @@ def rebuild_from_ir(artifact_path: str, fresh_document: bool = True, background:
 
 
 # ---------------------------------------------------------------------------
-# Tool: submit_feature_graph  (the FORWARD IR door — intent → IR → pycompiler → SolidWorks.
-# Re-enabled GATE-FREE 2026-07-16 for the forward vocabulary effort (IR-ADR-017); the old
-# experimental gates were deleted by IR-ADR-005. Two doors, ONE pycompiler: rebuild_from_ir
-# replays an artifact's stored graph, this tool takes a graph directly — never fork the compiler.)
+# The IR doors (rebuild_from_ir, replay_run, analyze_drawing build) all land in solidpilot.design:
+# each is a NEW design whose step 1 is the whole graph, so the result stays editable with
+# design_step / design_undo. Two doors, ONE compiler (IR-ADR-005) — never fork it.
 # ---------------------------------------------------------------------------
 def _run_graph(graph_obj, fresh_document, kind="graph", source=None):
-    """Record the run (derived operation ids, manifest) around _run_graph_inner.
+    """Build graph_obj as step 1 of a new design (fresh_document=False: adopt the active document).
 
-    Returns (text, ok, state_version); on any outcome the text ends with `run_id=...` so the
-    build can be named, inspected and replayed."""
-    run = runs.begin(kind, graph_obj, source)
-    try:
-        text, ok, sv, compile_result = _run_graph_inner(graph_obj, fresh_document)
-    except jobs.JobCancelled:
-        # Stopped between operations: the adapter's state_version is now behind the execution layer's.
-        sv = bridge._resync_state_version()
-        runs.end(run, "CANCELLED", "cancelled by request; partial geometry may remain", state_version=sv,
-                 session=bridge.session)
-        raise
-    except BaseException:
-        runs.end(run, "CRASHED", "exception escaped the compiler", session=bridge.session)
-        raise
-    runs.end(run, "COMPLETED" if ok else "FAILED", (text.splitlines() or [""])[0][:300],
-             compile_result=compile_result, state_version=sv, session=bridge.session)
-    return text + " | run_id=" + run.run_id, ok, sv
-
-
-def _run_graph_inner(graph_obj, fresh_document):
-    """The ONE path from a Feature Graph to live geometry — shared by every IR door.
-
-    IR-ADR-005 forbids FORKING the compiler, not having several doors into it. There are three
-    (submit_feature_graph takes a graph, rebuild_from_ir replays an artifact's stored one,
-    analyze_drawing(mode='build') lowers a drawing), and they all land here, so the document
-    choice, the compiler entry point and the post-run resync cannot diverge between them.
-
-    Returns (text, ok, state_version, compile_dict|None). On failure `text` is already a complete FAILED line."""
-    if fresh_document:
-        # The graph type picks the document: an assembly graph (component/mate nodes) needs an
-        # assembly, a part graph a part.
-        nodes = graph_obj.get("nodes") or [] if isinstance(graph_obj, dict) else []
-        is_assembly_graph = any(isinstance(n, dict) and n.get("type") in ("component", "mate")
-                                for n in nodes)
-        new_tool = "open_new_assembly" if is_assembly_graph else "open_new_part"
-        opened = bridge._call_raw(new_tool, {})
-        if opened.get("status") != "COMPLETED":
-            err = opened.get("error") or {}
-            return (f"FAILED | {new_tool.upper()}_FAILED | {err.get('code')}: {err.get('message')}",
-                    False, bridge.state.version, None)
-
-    # Lazy import: a missing compiler tree degrades to a clean tool error instead of killing the
-    # whole MCP server at startup.
-    try:
-        from ir_execution_port import run_feature_graph
-    except Exception as ex:  # noqa: BLE001
-        return f"FAILED | COMPILER_UNAVAILABLE | {ex}", False, bridge.state.version, None
-
-    # NEVER let an exception crash the MCP server; resync state_version regardless (IR-ADR-001) —
-    # one run performs MANY state-bumping sub-ops outside _call() (KNOWN-LIMITATIONS #5).
-    try:
-        result = run_feature_graph(graph_obj)
-    except Exception as ex:  # noqa: BLE001
-        sv = bridge._resync_state_version()
-        return (f"FAILED | UNEXPECTED | {type(ex).__name__}: {ex} | state_version resynced to {sv}",
-                False, sv, None)
-    # ok must reflect the COMPILE outcome: callers (analyze_drawing build, rebuild_from_ir) append
-    # success-only tails ("built from…", VERIFY hints) that are wrong on a half-built part.
-    return result.summary(), result.status == "COMPLETED", bridge._resync_state_version(), result.to_dict()
-
-
-@mcp.tool(structured_output=False)
-def submit_feature_graph(graph: str, fresh_document: bool = True, background: bool = False) -> str:
-    """Build a part (or assembly) from a Feature Graph IR in ONE call — the deterministic
-    compiler lowers each IR node to the right low-level tool sequence and resolves references
-    (geometric anchors, runtime feature names) against live geometry.
-
-    ★ PRIMARY BUILD PATH — prefer this whenever you are CREATING a part/assembly (including a
-    reverse reconstruction from a drawing). Assemble the WHOLE feature graph and submit it ONCE;
-    do NOT hand-build feature-by-feature with the individual low-level tools
-    (create_sketch/extrude_feature/add_edge_feature/…). One graph keeps tree order intact, lets
-    the compiler resolve anchors + runtime feature names deterministically, and takes far fewer
-    round-trips. The low-level tools are for RECOVERY (re-doing one failed node), a genuine
-    one-off edit, or a feature the IR vocabulary cannot yet express — not for routine
-    construction. If you truly cannot express the whole part in one graph yet, still submit the
-    LARGEST coherent batches (fresh_document=True for the first, append with fresh_document=False),
-    never one node at a time.
-
-    graph: the Feature Graph as a JSON STRING. Authoring from DESIGN INTENT: read the MCP resource
-        `recipe://usage/forward` FIRST (grammar, anchor design, self-verification), plus
-        `schema://feature-graph` — the schema IS the capability registry.
-        Replaying an ANALYZED part instead: `recipe://usage/canonicalization` +
-        `recipe://usage/mapping_part` (…/mapping_sheet_metal, …/mapping_assembly).
-        Essentials: units METERS, angles RADIANS (the compiler converts at tool boundaries);
-        nodes build in array order (tree order is law); extrude/revolve/rib/sweep/sheet_metal/
-        sketched_bend consume the IMMEDIATELY preceding sketch node; loft profiles, a sweep's
-        path, pattern seeds and mirror features reference EARLIER nodes by id; an optional
-        graph-level material {name, library?} applies after the last node.
-    fresh_document (default True): open a new blank document first — part graphs a part,
-        assembly graphs (component/mate nodes) an assembly. Pass False to build into the
-        CURRENT active document instead.
-
-    Returns the compiler's per-node report: COMPLETED n/n, or FAILED with a feature-level error
-    and how far it got. CAD ops are NOT transactional — on failure partial geometry remains
-    (reported, never hidden). Verify the result objectively (analyze_model / compare_parts) —
-    never assume."""
-    try:
-        graph_obj = json.loads(graph)
-    except Exception as ex:  # noqa: BLE001
-        return f"FAILED | INVALID_JSON | the graph is not valid JSON: {ex}"
-    if background:
-        return jobs.launch("submit_feature_graph", lambda: submit_feature_graph(graph, fresh_document, False))
-
-    text, ok, sv = _run_graph(graph_obj, fresh_document, kind="submit_feature_graph")
-    return text + f" | state_version={sv}"      # resynced after every run, success or not
+    Returns (text, ok, state_version); the text ends with `design_id=... | run_id=...` so the build can be
+    named, inspected, replayed and edited."""
+    return design.build_graph(graph_obj, fresh_document, kind=kind, source=source)
 
 
 @mcp.tool(structured_output=False)
 def replay_run(run_id: str = "", fresh_document: bool = True, background: bool = False) -> str:
     """Re-run a recorded build exactly: the same Feature Graph, through the same compiler, as a NEW run.
 
-    Every graph build (submit_feature_graph, rebuild_from_ir, analyze_drawing build) ends with `run_id=...`
+    Every graph build (design_new/design_step, rebuild_from_ir, analyze_drawing build) ends with `run_id=...`
     and leaves a manifest holding the graph, its sha256, the environment and the per-node log. Use this to
     reproduce a result, to retry after fixing the environment (e.g. a modal dialog), or to rebuild on a
     fresh document. run_id='' lists the most recent runs. The manifest's graph hash is verified first; an
-    edited record is refused. CAD ops are not transactional: a replay on a non-fresh document appends.
+    edited record is refused. A replay on a non-fresh document builds on top of the active document's tree.
     fresh_document (default True) opens a new blank document first, as the original did.
     background=True starts the replay as a job (see job_status)."""
     if background and run_id.strip():

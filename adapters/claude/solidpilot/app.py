@@ -5,7 +5,7 @@ from mcp.server.caching import CacheHint
 from solidpilot.surface import INSTRUCTIONS
 
 # NOTE: pycompiler is reached via `from ir_execution_port import run_feature_graph` imported
-# LAZILY inside rebuild_from_ir and submit_feature_graph — a missing compiler tree degrades to a
+# LAZILY inside rebuild_from_ir and the design tools — a missing compiler tree degrades to a
 # clean tool error instead of killing the whole MCP server at startup.
 
 # P0.4 MCP hardening: discriminators are `Literal[...]` (invalid values rejected at the

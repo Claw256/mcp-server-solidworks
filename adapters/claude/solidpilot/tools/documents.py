@@ -79,7 +79,9 @@ def open_document(file_path: str, as_assembly: bool = False) -> str:
 # ---------------------------------------------------------------------------
 @mcp.tool(structured_output=False)
 def verify_state() -> str:
-    """Read and return the current CAD state without modifying it."""
+    """Read and return the current CAD state without modifying it.
+    Succeeds whenever SolidWorks is connected; if no document is open, document_type is "NONE"
+    and active_document is null."""
     return _call("verify_state", {})
 
 

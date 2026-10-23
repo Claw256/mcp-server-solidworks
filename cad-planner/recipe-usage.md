@@ -51,7 +51,7 @@ The same part must always yield the same IR, modulo parameter values:
 ## forward — Forward authoring (intent → IR, no original part)
 
 Read this FIRST when writing a Feature Graph from DESIGN INTENT (the forward door,
-`submit_feature_graph`) rather than from an analysis artifact. The `mapping_*` sections assume
+`design_new` / `design_step`) rather than from an analysis artifact. The `mapping_*` sections assume
 an ORIGINAL part whose reader output you copy verbatim (C7 readback); forward authoring has no
 original — these rules replace the readback discipline there. C1–C5 still apply.
 
@@ -97,9 +97,20 @@ original — these rules replace the readback discipline there. C1–C5 still ap
   COMPLETED, read `analyze_model(mass_properties + geometry)` and compare — a match within
   rounding is the forward equivalent of the round-trip verdict. Splines are the exception:
   through-point recreation is visually equivalent, never exact — check bounds, not equality.
-- **Failure model:** CAD ops are not transactional — a failed run leaves partial geometry
-  (reported, never hidden). Fix the graph and resubmit with `fresh_document=true` rather than
-  patching the partial document.
+- **Build incrementally, verify each step.** `design_new(kind)` opens a blank document and a design
+  session; add the graph in small `design_step(patch, label)` calls (base sketch + extrude first, then
+  holes, patterns, fillets) and verify (`analyze_model`, hand-computed volume) after each. Patch ops:
+  `{op:add,nodes,after?}`, `{op:replace,id,node}`, `{op:set,id,params}`, `{op:remove,id}`,
+  `{op:material,material}`. Node ids are stable, so later steps can reference earlier nodes.
+- **Failure model:** each step is validated as a WHOLE graph first (an invalid patch changes nothing)
+  and a step that fails is restored automatically — the design is left as it was, so there is no
+  partial geometry to clean up. Fix the patch and step again; do not rebuild from scratch. To change
+  something already built, `design_step` it (`set` / `replace` / `remove`; only nodes from the first
+  changed one onward recompile) or `design_undo` / `design_redo` along the step history
+  (`design_history` lists it; a new step discards redo). `DESIGN_DRIFT` = the model was edited by hand
+  since the last step: report it, do not overwrite. Caveat: undoing a `material` step does not remove
+  the material. `rebuild_from_ir`, `replay_run` and `analyze_drawing(mode='build')` also create a design,
+  so their results can be amended the same way.
 
 ## mapping — Core mapping steps (recipe → IR)
 
@@ -484,7 +495,7 @@ the flat face → `add_sketch_entity(line)` → `sheet_metal_feature('sketched_b
 
 **R16 — A NOT_DIRECT verdict is not a failure and not something to argue with.** It says the drawing
 does not force the answer — which is exactly when a human-grade read is what the job needs. Apply
-R1–R15 and build with `submit_feature_graph`.
+R1–R15 and build incrementally with `design_new` / `design_step`.
 
 **Never compare two analyses by their VERSION LABEL.** An artifact is a cache keyed by
 `source.sha256`, and the version string is only as honest as the discipline that bumped it — one
@@ -608,8 +619,8 @@ over 2π, open extrude profiles and unknown field names.
 
 **5. Build, then VERIFY mechanically.** Call `verify_against_interpretation` with the table's numbers in mm:
 overall `bbox_mm`, `volume_mm3` (hand-computed, R13), `holes`, and `cg_mm` when any feature is one-sided (the
-only check that catches a mirrored feature, R14). A FAIL names the item and delta: fix the graph once and
-resubmit with `fresh_document=true`. If `capture_model_view` is available, compare an isometric render to the
+only check that catches a mirrored feature, R14). A FAIL names the item and delta: fix it once with a
+`design_step` (or `design_undo`), not a rebuild. If `capture_model_view` is available, compare an isometric render to the
 drawing's iso/views (label them "Image 1: drawing", "Image 2: model").
 
 **6. Close with an honest ledger:** what was verified (and by text or vision), what was assumed, what could not

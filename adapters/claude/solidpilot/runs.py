@@ -1,6 +1,6 @@
 """Run records: make a build reproducible and its logs correlatable.
 
-A RUN is one Feature Graph execution (submit_feature_graph, rebuild_from_ir, analyze_drawing(build),
+A RUN is one Feature Graph execution (design_new/design_step/undo/redo, rebuild_from_ir, analyze_drawing(build),
 replay_run). While a run is active:
   * every operation id is DERIVED (uuid5 of run_id + sequence), not random, so the C# execution log, the
     adapter log and the manifest all name the same operations, and re-sending an operation inside a run

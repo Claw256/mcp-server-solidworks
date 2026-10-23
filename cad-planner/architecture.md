@@ -15,7 +15,7 @@ User intent ─▶ Planner (intent → Feature Graph IR) ─▶ [IR] ─▶ comp
 
 ## Phase 1 vs Phase 2 (important)
 
-- **Phase 1 (now): the Planner is the host model (Claude) + the IR schema + a planning prompt.** There is **no separate running planner service.** Claude does intent→IR reasoning itself and submits the graph through the single MCP tool `submit_feature_graph(graph)`. This repo therefore holds a *contract + instructions*, not a server.
+- **Phase 1 (now): the Planner is the host model (Claude) + the IR schema + a planning prompt.** There is **no separate running planner service.** Claude does intent→IR reasoning itself and builds the graph incrementally through the MCP design-session tools (`design_new`, `design_step`, `design_undo`/`design_redo`, `design_history`). This repo therefore holds a *contract + instructions*, not a server.
 - **Phase 2 (later, after local infra): a dedicated/local-LLM planner** for near-zero usage cost. Same IR contract, different runtime.
 
 ## Responsibilities

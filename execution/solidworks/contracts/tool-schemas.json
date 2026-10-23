@@ -313,7 +313,7 @@
   "output": "→ see execution-response.json — result_geometry holds {section_view, label}."
  },
  "verify_state": {
-  "description": "Reads and returns the current CAD state without modifying the document, used to confirm expected state before or after operations.",
+  "description": "Reads and returns the current CAD state without modifying the document, used to confirm expected state before or after operations. Succeeds whenever SolidWorks is attached; if no document is open it returns COMPLETED with cad_state.document_type = \"NONE\" and active_document = null (it does not fail).",
   "input": {
    "operation_id": "string (required, unique idempotency key)",
    "state_version": "integer (required, must match current execution state)",
@@ -573,7 +573,7 @@
    "operation_id": "n/a — pure file read, no execution call",
    "state_version": "n/a — pure file read, no execution call",
    "params": {
-    "section": "string enum (default 'index' — TOC + version header): 'contract' | 'canonicalization' | 'forward' (intent→IR authoring for submit_feature_graph) | 'mapping' | 'mapping_part' | 'mapping_sheet_metal' | 'mapping_assembly' | 'verification' | 'reverse' (drawing→part reading discipline) | 'coverage' | 'feature_graph_schema' (IR schema JSON) | 'analysis_artifact_schema' (artifact contract JSON)",
+    "section": "string enum (default 'index' — TOC + version header): 'contract' | 'canonicalization' | 'forward' (intent→IR authoring for design_new/design_step) | 'mapping' | 'mapping_part' | 'mapping_sheet_metal' | 'mapping_assembly' | 'verification' | 'reverse' (drawing→part reading discipline) | 'coverage' | 'feature_graph_schema' (IR schema JSON) | 'analysis_artifact_schema' (artifact contract JSON)",
     "profile": "string enum (default 'all'), meaningful for section='feature_graph_schema' only: 'part' drops the ASSEMBLY vocabulary (assembly_types_v06, ~2.4 KB); every feature type INCLUDING sheet metal stays, because a drawing is not known to be sheet metal until R21 decides. Both profiles omit the developer-only blocks the FILE must keep for gate 3 (_meta.status = the version narrative; covered_subset._note/._grammar_note/.assumptions = the machine-diff instructions). The covered_subset ARRAYS — the capability list itself — are never touched."
    }
   },
@@ -591,7 +591,7 @@
   "output": "Token-frugal summary string: artifact path + feature/parameter counts + topology counts + linked-drawing count + hash prefix. The artifact JSON itself stays on disk — read it from there when the full content is needed."
  },
  "rebuild_from_ir": {
-  "description": "ADAPTER-ONLY orchestration (no ToolController/SolidWorksService case) — the analysis pipeline's IR door (IR-ADR-005: two doors, ONE pycompiler). Reads an analysis artifact JSON, takes ir.graph, optionally opens a fresh part, and executes the graph through the SAME deterministic pycompiler as the forward door submit_feature_graph (two doors, one compiler), over the existing /api/tool/execute + /state endpoints. Reports a stale source hash informatively (cache discipline, ADR-040); resyncs the adapter's state_version after the run (many state-bumping sub-ops happen outside the normal _call path).",
+  "description": "ADAPTER-ONLY orchestration (no ToolController/SolidWorksService case) — the analysis pipeline's IR door (IR-ADR-005: two doors, ONE pycompiler). Reads an analysis artifact JSON, takes ir.graph, optionally opens a fresh part, and executes the graph through the SAME deterministic pycompiler as design_new/design_step (two doors, one compiler), over the existing /api/tool/execute + /state endpoints. Reports a stale source hash informatively (cache discipline, ADR-040); resyncs the adapter's state_version after the run (many state-bumping sub-ops happen outside the normal _call path).",
   "input": {
    "operation_id": "n/a at this level — each lowered sub-op carries its own operation_id (uuid4) and state_version on /api/tool/execute",
    "state_version": "n/a at this level — the adapter resyncs its local state_version from GET /state after the run",
@@ -603,18 +603,65 @@
   },
   "output": "The compiler's per-node summary string: COMPLETED n/n nodes (+ artifact name, + source_stale flag when the source file changed since analysis) or FAILED with the feature-level error and how far it got (partial geometry may remain — CAD ops are not transactional)."
  },
- "submit_feature_graph": {
-  "description": "ADAPTER-ONLY orchestration (no ToolController/SolidWorksService case) — the FORWARD Feature Graph IR door (re-enabled gate-free 2026-07-16, IR-ADR-017): builds a part or assembly from a CAD-neutral Feature Graph IR in ONE call. The adapter's deterministic pycompiler (compiler/solidworks/pycompiler — the SAME compiler rebuild_from_ir uses; two doors, one compiler, IR-ADR-005) lowers each IR node to ordered calls on the EXISTING low-level tools over /api/tool/execute + /state, and resolves references (geometric anchors, runtime feature names) against live geometry. Vocabulary = cad-planner/contracts/feature-graph.schema.json 0.7.0-draft (the capability registry; served to the model as the `schema://feature-graph` MCP resource). fresh_document=true opens a new blank document first — the graph's node types decide part vs assembly. Resyncs the adapter's state_version after every run (many state-bumping sub-ops happen outside the normal _call path).",
+ "design_new": {
+  "description": "ADAPTER-ONLY orchestration (no ToolController/SolidWorksService case) - starts a DESIGN session: opens a blank part or assembly and creates a journal (persisted to .solidpilot/designs/<design_id>.json) of node-list snapshots. An optional Feature Graph IR graph is applied as step 1 through the deterministic pycompiler (the same compiler rebuild_from_ir uses). A failed step is rolled back (tree truncated, old suffix rebuilt), leaving the design unchanged.",
   "input": {
-   "operation_id": "n/a at this level — each lowered sub-op carries its own operation_id (uuid4) and state_version on /api/tool/execute",
+   "operation_id": "n/a at this level — each lowered sub-op carries its own operation_id (derived from the run id) and state_version on /api/tool/execute",
    "state_version": "n/a at this level — the adapter resyncs its local state_version from GET /state after the run",
    "params": {
-    "graph": "string (required — JSON Feature Graph IR per cad-planner/contracts/feature-graph.schema.json; lengths in METERS, angles in RADIANS)",
-    "fresh_document": "boolean (optional, default true — open a new blank document first: part graphs a part, assembly graphs an assembly; false = build into the current active document)",
-    "background": "boolean (optional, default false) - start the build as a background job and return a job_id at once (poll job_status); for builds that may outlast a chat call. One job at a time; other CAD calls are refused while it runs"
+    "kind": "string (optional, default 'part') - 'part' | 'assembly'; a graph's node types override it",
+    "label": "string (optional) - session label",
+    "graph": "string (optional) - JSON Feature Graph IR applied as step 1 (METERS, RADIANS)",
+    "background": "boolean (optional, default false) - start the step as a background job and return a job_id at once (poll job_status); one job at a time; other CAD calls are refused while it runs"
    }
   },
-  "output": "Per-node report string: COMPLETED (nodes built) or FAILED (feature-level error + how far it got). Partial geometry may remain on failure (CAD ops are not transactional). Not itself in the state_version/idempotency envelope; its sub-ops are."
+  "output": "COMPLETED | ... or FAILED | <code> | ..., ending with design_id=<id> step=N head=N/total | run_id=<id> | state_version=<n>"
+ },
+ "design_step": {
+  "description": "ADAPTER-ONLY orchestration - applies a patch (add / replace / set / remove / material ops) to the current design's head snapshot and reconciles the document: the WHOLE target node list is validated first (invalid = zero CAD changes), the live feature tree is checked against the journal (FAILED | DESIGN_DRIFT on manual edits), the longest common node prefix is kept, the tree is truncated to its recorded boundary (truncate_feature_tree) and only the suffix is compiled with the prefix's feature names seeded. On failure the old suffix is rebuilt (FAILED | STEP_FAILED, design unchanged; FAILED | DESIGN_CORRUPT if even that fails). A new step discards the redo entries.",
+  "input": {
+   "operation_id": "n/a at this level — each lowered sub-op carries its own operation_id (derived from the run id) and state_version on /api/tool/execute",
+   "state_version": "n/a at this level — the adapter resyncs its local state_version from GET /state after the run",
+   "params": {
+    "patch": "string (required) - JSON list of ops: {op:'add',nodes:[...],after?:id} | {op:'replace',id,node} | {op:'set',id,params} | {op:'remove',id} | {op:'material',material:{name,library?}|null}",
+    "label": "string (optional) - step name shown by design_history",
+    "background": "boolean (optional, default false) - start the step as a background job and return a job_id at once (poll job_status); one job at a time; other CAD calls are refused while it runs"
+   }
+  },
+  "output": "COMPLETED | step N | IR built n/n nodes | kept k unchanged ... or FAILED | VALIDATION_FAILED | PATCH_INVALID | NODE_NOT_FOUND | DESIGN_DRIFT | STEP_FAILED | DESIGN_CORRUPT | ..., ending with design_id=<id> step=N head=N/total | run_id=<id> | state_version=<n>"
+ },
+ "design_undo": {
+  "description": "ADAPTER-ONLY orchestration - moves the design head back `steps` snapshots and reconciles the document to it (feature tree truncated to the common prefix boundary, only differences rebuilt). Material is document state and is not removed by undoing a material step.",
+  "input": {
+   "operation_id": "n/a at this level — each lowered sub-op carries its own operation_id (derived from the run id) and state_version on /api/tool/execute",
+   "state_version": "n/a at this level — the adapter resyncs its local state_version from GET /state after the run",
+   "params": {
+    "steps": "integer (optional, default 1)"
+   }
+  },
+  "output": "COMPLETED | now at step N (label) | ... or FAILED | NOTHING_TO_UNDO | DESIGN_DRIFT | ..., ending with design_id=<id> step=N head=N/total | run_id=<id> | state_version=<n>"
+ },
+ "design_redo": {
+  "description": "ADAPTER-ONLY orchestration - moves the design head forward `steps` undone snapshots and reconciles the document to it. A new design_step discards the redo entries.",
+  "input": {
+   "operation_id": "n/a at this level — each lowered sub-op carries its own operation_id (derived from the run id) and state_version on /api/tool/execute",
+   "state_version": "n/a at this level — the adapter resyncs its local state_version from GET /state after the run",
+   "params": {
+    "steps": "integer (optional, default 1)"
+   }
+  },
+  "output": "COMPLETED | now at step N (label) | ... or FAILED | NOTHING_TO_REDO | DESIGN_DRIFT | ..., ending with design_id=<id> step=N head=N/total | run_id=<id> | state_version=<n>"
+ },
+ "design_history": {
+  "description": "ADAPTER-ONLY orchestration - read-only: lists the design's steps with labels and what each changed, the head marker, undone steps available to redo and the current node ids/types. Reads the persisted journal, so it survives an adapter restart.",
+  "input": {
+   "operation_id": "n/a at this level — each lowered sub-op carries its own operation_id (derived from the run id) and state_version on /api/tool/execute",
+   "state_version": "n/a at this level — the adapter resyncs its local state_version from GET /state after the run",
+   "params": {
+    "design_id": "string (optional, default '' = the current design)"
+   }
+  },
+  "output": "Multi-line history text ending with design_id=<id> step=N head=N/total"
  },
  "compare_parts": {
   "description": "ADAPTER-ONLY orchestration (no ToolController/SolidWorksService case) — the objective two-part diff / round-trip verifier (ADR-040, A0). Each doc argument is either an absolute .SLDPRT path (opened from disk) or an open document's TITLE (e.g. an unsaved rebuild). Activates each in turn and runs analyze_model(geometry + mass_properties); compares topology (bodies/faces/edges/vertices), volume, surface area, CG. Reports the DECIDED verified-criteria verdict (topology EXACT and |dV| <= 1% and |dA| <= 1%) — writing ir.verification into an artifact stays the caller's job. Geometry-read-only; doc_b is left active. bbox comparison pending (analyze does not expose it).",
@@ -816,6 +863,26 @@
    }
   },
   "output": "string: SAVED | ..., RESTORED | ..., a CHECKPOINTS list, or FAILED | <code> | ..."
+ },
+ "feature_tree": {
+  "description": "[EXECUTION-ONLY — internal to the compiler/design layer, not an MCP tool] Read-only: returns the ORDERED list of user-created features of the active part/assembly (sketches, features, user reference geometry; excludes origin, default planes, Annotations/Sensors/Material/Lights/Cameras and history/comment folders). Checks but does NOT bump state_version.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state)",
+   "params": {}
+  },
+  "output": "-> see execution-response.json - cad_state.features = the ordered names; result_geometry.feature_count = their count"
+ },
+ "truncate_feature_tree": {
+  "description": "[EXECUTION-ONLY — internal to the compiler/design layer, not an MCP tool] DESTRUCTIVE: keeps the first keep_count user features (tree order) and deletes every later one, last first (children before parents, sketches of deleted features included), moving the rollback bar to the end first, then one rebuild. Stops at the first failure and names the feature. Bumps state_version.",
+  "input": {
+   "operation_id": "string (required, unique idempotency key)",
+   "state_version": "integer (required, must match current execution state)",
+   "params": {
+    "keep_count": "integer (required, >= 0 and <= the current feature count; INVALID_PARAMETER otherwise)"
+   }
+  },
+  "output": "-> see execution-response.json - cad_state.features = the remaining ordered names; result_geometry = { feature_count, deleted }; FAILED SELECTION_FAILED names the feature that could not be deleted"
  },
  "save_copy": {
   "description": "[ADAPTER-ONLY \u2014 no COM, no REST, no state_version] Saves a COPY of the active document to file_path (IModelDocExtension.SaveAs3 with swSaveAsOptions_Silent|Copy) and keeps editing the original: unlike save_document(file_path), which is a real SaveAs, the active document's name, path and feature tree are untouched. Creates the folder if needed.",

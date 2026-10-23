@@ -89,7 +89,7 @@ def _call_raw(tool_name: str, params: dict) -> dict:
 def _resync_state_version() -> int:
     """Realign the adapter's local state_version with the authoritative GET /state.
 
-    A submit_feature_graph run performs MANY execution ops (each bumping state_version) OUTSIDE the
+    A design step or graph build performs MANY execution ops (each bumping state_version) OUTSIDE the
     normal _call() path, so afterwards — success OR failure — we resync the local value, or the NEXT
     normal tool call would fail INVALID_STATE_VERSION (KNOWN-LIMITATIONS #5)."""
     try:

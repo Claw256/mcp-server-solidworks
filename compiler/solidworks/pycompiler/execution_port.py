@@ -20,6 +20,11 @@ class ExecutionPort(object):
 
       get_state() -> int: the authoritative current state_version (GET /state — read-only, no
         check, no increment). Used to seed a run and to resync afterwards.
+
+      tree_size() -> int  (OPTIONAL): the number of ordered user features currently in the
+        document's feature tree. When present the compiler records it after each node as that
+        node's `boundary` (used to truncate the tree back to a node boundary); a port without it
+        yields boundary None.
     """
 
     def execute(self, tool, params, state_version):

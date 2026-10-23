@@ -14,6 +14,10 @@ try:
 except ImportError:                       # adapter deps not installed: standalone runs skip
     _DEPS = False
 
+_BOX_GRAPH = {"units": "meters", "nodes": [{"id": "b1", "type": "box", "ref": {"datum": "top"},
+                                            "width": 0.05, "depth": 0.05, "height": 0.05}]}
+_ASM_GRAPH = {"units": "meters", "nodes": [{"id": "c1", "type": "component", "source": {"path": "C:/a.SLDPRT"},
+                                            "transform": [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]}]}
 COMPLETED = {"status": "COMPLETED", "stateVersion": 7, "cadState": {}}
 MISMATCH = {"status": "FAILED", "error": {"code": "INVALID_STATE_VERSION", "message": "x"}}
 
@@ -93,7 +97,7 @@ def test_run_graph_fresh_document_failure_is_a_complete_failed_line():
     real = bridge._call_raw
     bridge._call_raw = lambda tool, params: {"status": "FAILED", "error": {"code": "NO_SW", "message": "closed"}}
     try:
-        text, ok, _sv = graph._run_graph({"nodes": []}, True)
+        text, ok, _sv = graph._run_graph(_BOX_GRAPH, True)
     finally:
         bridge._call_raw = real
     assert not ok and text.startswith("FAILED | OPEN_NEW_PART_FAILED | NO_SW: closed")
@@ -106,7 +110,7 @@ def test_run_graph_picks_assembly_document_for_assembly_graphs():
     real = bridge._call_raw
     bridge._call_raw = lambda tool, params: (seen.append(tool) or {"status": "FAILED", "error": {}})
     try:
-        graph._run_graph({"nodes": [{"type": "component"}]}, True)
+        graph._run_graph(_ASM_GRAPH, True)
     finally:
         bridge._call_raw = real
     assert seen == ["open_new_assembly"]

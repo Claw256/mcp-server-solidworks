@@ -169,13 +169,14 @@ def find_drawing_api_drift():
 
 # Tools that exist ONLY in the execution layer (no model-facing adapter tool); the adapter reaches them
 # through bridge._call_raw. Adding to this set is a deliberate decision.
-EXECUTION_ONLY_TOOLS = {"save_copy"}
+EXECUTION_ONLY_TOOLS = {"save_copy", "feature_tree", "truncate_feature_tree"}
 
 
 # Tools that exist ONLY in the adapter (no C# handler). Adding to this set is a deliberate decision.
 ADAPTER_ONLY_TOOLS = {
     "analyze_drawing", "annotate_regions", "ask_user", "compare_assemblies", "compare_parts", "ensure_ready",
-    "get_recipe", "prepare_drawing", "rebuild_from_ir", "save_analysis", "submit_feature_graph",
+    "get_recipe", "prepare_drawing", "rebuild_from_ir", "save_analysis", "design_new", "design_step",
+    "design_undo", "design_redo", "design_history",
     "verify_against_interpretation", "replay_run", "job_status", "checkpoint",
 }
 

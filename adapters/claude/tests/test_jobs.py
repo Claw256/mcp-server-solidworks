@@ -120,63 +120,58 @@ def test_a_crashing_job_ends_as_failed_with_the_reason():
     assert jobs.status("nope").startswith("FAILED | JOB_NOT_FOUND")
 
 
-def test_submit_feature_graph_background_starts_a_job_and_the_result_arrives_via_job_status():
+def test_design_new_background_starts_a_job_and_the_result_arrives_via_job_status():
     if not _DEPS:
         return
+    from solidpilot import design
     _wait_idle()
-    real = graph_tools._run_graph
-    graph_tools._run_graph = lambda g, fresh, **kw: ("COMPLETED | IR built 1/1 nodes | run_id=abc", True, 4)
+    real = design.new
+    design.new = lambda kind, label, graph_obj, **kw: ("COMPLETED | IR built 1/1 nodes | run_id=abc", True, 4)
     try:
-        started = server.submit_feature_graph('{"nodes": []}', background=True)
+        started = server.design_new(graph='{"nodes": []}', background=True)
         assert started.startswith("JOB_STARTED")
         jid = started.split("job_id=")[1].split()[0]
         out = server.job_status(jid, wait_s=5)
     finally:
-        graph_tools._run_graph = real
+        design.new = real
     assert out.startswith("COMPLETED | job_id=" + jid) and "IR built 1/1 nodes" in out and "state_version=4" in out
-    assert server.submit_feature_graph("not json", background=True).startswith("FAILED | INVALID_JSON")
+    assert server.design_new(graph="not json", background=True).startswith("FAILED | INVALID_JSON")
 
 
 def test_cancel_through_the_compile_path_is_not_swallowed_and_is_recorded_as_cancelled():
     """JobCancelled must get past the broad `except Exception` handlers and end the run as CANCELLED."""
     if not _DEPS:
         return
-    import tempfile
-    import ir_execution_port
-    from solidpilot import runs
+    import json
+    from solidpilot import design, runs
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import fake_tree_port
     _wait_idle()
     started = threading.Event()
 
-    def fake_compile(graph):
+    def fake_compile(port, graph, **kw):
         started.set()
         try:
             for _ in range(500):
                 jobs.checkpoint("add_sketch_entity")           # what AdapterExecutionPort.execute does per op
                 time.sleep(0.01)
         except Exception:                                      # a compiler-style catch-all must NOT see the cancel
-            return type("R", (), {"status": "FAILED", "summary": lambda self: "FAILED | swallowed",
-                                  "to_dict": lambda self: {}})()
+            raise AssertionError("swallowed")
         raise AssertionError("never cancelled")
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
-        old_env = os.environ.get("SOLIDPILOT_RUNS_DIR")
-        os.environ["SOLIDPILOT_RUNS_DIR"] = d
-        real_run, real_raw, real_resync = ir_execution_port.run_feature_graph, bridge._call_raw, bridge._resync_state_version
-        ir_execution_port.run_feature_graph = fake_compile
-        bridge._call_raw = lambda tool, params: {"status": "COMPLETED"}
-        bridge._resync_state_version = lambda: 21
+    with fake_tree_port.Env() as env:
+        real = design._compile
+        design._compile = fake_compile
         try:
-            jid = server.submit_feature_graph('{"nodes": []}', background=True).split("job_id=")[1].split()[0]
+            g = fake_tree_port.graph(fake_tree_port.box("b1"))
+            jid = server.design_new(graph=json.dumps(g), background=True).split("job_id=")[1].split()[0]
             assert started.wait(5)
             out = jobs.status(jid, wait_s=5, cancel=True)
             rows = runs.recent()
         finally:
-            ir_execution_port.run_feature_graph, bridge._call_raw, bridge._resync_state_version = real_run, real_raw, real_resync
-            if old_env is None:
-                os.environ.pop("SOLIDPILOT_RUNS_DIR", None)
-            else:
-                os.environ["SOLIDPILOT_RUNS_DIR"] = old_env
+            design._compile = real
     assert out.startswith("CANCELLED | job_id=" + jid), out
     assert rows and rows[0]["status"] == "CANCELLED"
+
 
 
 def test_job_status_is_read_only_in_the_annotations():

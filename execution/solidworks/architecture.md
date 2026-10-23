@@ -23,6 +23,9 @@ The compiler (deterministic) drives this layer over plain REST. In Phase 1 the M
 - One pipeline for every tool call (`ToolPipeline`): tool lookup from the `[Tool]` registry, duplicate replay,
   `state_version` check, dialog guard, post-tool `diagnostics`, timing. A call that exceeds
   `SOLIDPILOT_TOOL_TIMEOUT_S` (default 15 min) answers `TOOL_TIMEOUT` instead of hanging the caller.
+- Feature-tree tools for the compiler's incremental design: `feature_tree` (read-only, ordered user-feature names;
+  excludes origin, default planes and system folders) and `truncate_feature_tree(keep_count)` (destructive: deletes
+  later features last-first, rebuilds once, bumps `state_version`). Execution-only: no model-facing adapter tool.
 - Feature-mutating tools (`[Tool(..., Diagnose = true)]`) run with modal rebuild/feature dialogs suppressed and
   restored afterwards (`SOLIDPILOT_SUPPRESS_DIALOGS=0` disables), and return `diagnostics`: new feature errors
   (`IFeature.GetErrorCode2`), the What's Wrong count and the volume delta.

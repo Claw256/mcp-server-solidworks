@@ -57,7 +57,7 @@ pip install -r requirements.txt
 python agent.py
 ```
 
-It reconnects with backoff. Start it at logon (Task Scheduler "At log on", action `python.exe agent.py`, start in `adapters\claude`). `GET /health` shows `agent_connected` while it is polling.
+It reconnects with backoff. To start it automatically at sign-in, run `.\install_agent_startup.ps1` (registers a per-user "SolidPilot Agent" scheduled task that runs windowless, restarts on failure and needs no admin; `-Uninstall` removes it). It is a sign-in task rather than a boot service because SolidWorks needs an interactive session; for unattended boot, enable Windows auto-logon. `GET /health` shows `agent_connected` while it is polling.
 
 ## 3. Add the connector in Claude
 

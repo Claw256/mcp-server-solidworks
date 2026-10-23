@@ -12,6 +12,7 @@ if _ADAPTER_DIR not in sys.path:
 try:
     import server
     import ir_execution_port
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import adapter_log
     from solidpilot import runs, bridge
     from solidpilot.tools import graph as graph_tools
@@ -19,45 +20,20 @@ try:
 except Exception:  # noqa: BLE001
     _DEPS = False
 
-GRAPH = {"nodes": [{"id": "s1", "type": "sketch"}, {"id": "e1", "type": "extrude"}]}
-
-
-class _Result:
-    status = "COMPLETED"
-
-    def summary(self):
-        return "COMPLETED | IR built 2/2 nodes | exec_calls=2"
-
-    def to_dict(self):
-        return {"status": "COMPLETED", "nodes_total": 2, "nodes_completed": 2, "node_log": []}
+GRAPH = {"units": "meters", "nodes": [{"id": "b1", "type": "box", "ref": {"datum": "top"},
+                                       "width": 0.05, "depth": 0.05, "height": 0.05}]}
 
 
 class _Env:
-    """Temp runs dir + a fake compiler that asks for two derived operation ids, as a real run would."""
+    """Temp runs/designs dirs + the feature-tree fake port: a build asks for derived operation ids, as a real run would."""
     def __enter__(self):
-        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
-        self.old_env = os.environ.get("SOLIDPILOT_RUNS_DIR")
-        os.environ["SOLIDPILOT_RUNS_DIR"] = self.tmp.name
-        self.ids = []
-        self.real_raw, self.real_run = bridge._call_raw, ir_execution_port.run_feature_graph
-        self.real_resync = bridge._resync_state_version
-        bridge._call_raw = lambda tool, params: (runs.operation_id(tool) and {"status": "COMPLETED"})   # consumes an id, like the real path
-        bridge._resync_state_version = lambda: 12
-
-        def fake_run(graph):
-            self.ids += [runs.operation_id("add_sketch_entity"), runs.operation_id("extrude_feature")]
-            return _Result()
-        ir_execution_port.run_feature_graph = fake_run
+        import fake_tree_port
+        self.inner = fake_tree_port.Env().__enter__()
+        self.port = self.inner.port
         return self
 
     def __exit__(self, *a):
-        bridge._call_raw, ir_execution_port.run_feature_graph = self.real_raw, self.real_run
-        bridge._resync_state_version = self.real_resync
-        if self.old_env is None:
-            os.environ.pop("SOLIDPILOT_RUNS_DIR", None)
-        else:
-            os.environ["SOLIDPILOT_RUNS_DIR"] = self.old_env
-        self.tmp.cleanup()
+        self.inner.__exit__(*a)
 
 
 def _rid(text):
@@ -68,25 +44,24 @@ def test_build_writes_a_manifest_with_graph_hash_ops_and_environment():
     if not _DEPS:
         return
     with _Env() as env:
-        out = server.submit_feature_graph(json.dumps(GRAPH))
+        out = server.design_new(graph=json.dumps(GRAPH))
         rid = _rid(out)
         m, err = runs.load(rid)
-        assert err is None and m["status"] == "COMPLETED" and m["kind"] == "submit_feature_graph"
+        assert err is None and m["status"] == "COMPLETED" and m["kind"] == "design_new"
         assert m["graph"] == GRAPH and m["graph_sha256"] == runs.graph_sha256(GRAPH)
-        assert [o["tool"] for o in m["ops"]] == ["open_new_part", "add_sketch_entity", "extrude_feature"]
-        assert m["compile"]["nodes_completed"] == 2 and m["state_version_after"] == 12
-        assert m["environment"]["python"] and "state_version=12" in out
+        assert [o["tool"] for o in m["ops"]] == ["open_new_part", "create_sketch", "add_sketch_entity", "extrude_feature"]
+        assert m["compile"]["nodes_completed"] == 1 and m["state_version_after"] == 103
+        assert m["environment"]["python"] and "state_version=103" in out
 
 
 def test_operation_ids_inside_a_run_are_derived_and_outside_are_random():
     if not _DEPS:
         return
     with _Env() as env:
-        out = server.submit_feature_graph(json.dumps(GRAPH))
+        out = server.design_new(graph=json.dumps(GRAPH))
         m, _ = runs.load(_rid(out))
-        expected = [str(uuid.uuid5(runs._NAMESPACE, "%s:%d" % (m["run_id"], i))) for i in range(3)]
+        expected = [str(uuid.uuid5(runs._NAMESPACE, "%s:%d" % (m["run_id"], i))) for i in range(4)]
         assert [o["op_id"] for o in m["ops"]] == expected
-        assert env.ids == expected[1:]                   # the compiler's ops are the same ids the manifest lists
     assert runs.current() is None
     assert runs.operation_id() != runs.operation_id()    # random again once the run has ended
 
@@ -95,7 +70,7 @@ def test_replay_runs_the_same_graph_as_a_new_run_and_refuses_a_tampered_record()
     if not _DEPS:
         return
     with _Env() as env:
-        first = _rid(server.submit_feature_graph(json.dumps(GRAPH)))
+        first = _rid(server.design_new(graph=json.dumps(GRAPH)))
         out = server.replay_run(first)
         second = _rid(out)
         assert second != first and f"replayed_from={first}" in out

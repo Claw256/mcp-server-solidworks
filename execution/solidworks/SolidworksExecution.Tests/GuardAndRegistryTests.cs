@@ -28,6 +28,17 @@ namespace SolidworksExecution.Tests
         }
 
         [Fact]
+        public void Feature_tree_tools_are_registered_and_check_state_version()
+        {
+            ToolEntry e;
+            Assert.True(ToolRegistry.TryGet("feature_tree", out e));
+            Assert.True(e.CheckStateVersion);
+            Assert.False(e.Diagnose);
+            Assert.True(ToolRegistry.TryGet("truncate_feature_tree", out e));
+            Assert.True(e.CheckStateVersion);
+        }
+
+        [Fact]
         public void Only_feature_mutating_tools_request_diagnostics()
         {
             ToolEntry e;

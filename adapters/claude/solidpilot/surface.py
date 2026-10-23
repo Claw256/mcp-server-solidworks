@@ -7,22 +7,22 @@ destructive call; they never change what a tool does.
 from mcp.types import ToolAnnotations
 
 INSTRUCTIONS = """\
-SolidWorks CAD adapter. Typical order: ensure_ready -> open_new_part/open_document -> build -> verify -> export.
+SolidWorks CAD adapter. Typical order: ensure_ready -> design_new -> design_step (small steps, verify each) -> export. Undo/redo with design_undo/design_redo.
 From a 2D drawing: analyze_drawing first. If it lists OPEN QUESTIONS, put them to the user with ask_user (or in
 chat) and pass the answers back; never build around a doubt yourself. After a build, verify_against_interpretation()
 with no arguments checks the model against the drawing itself.
 Units: lengths are METERS and angles RADIANS everywhere except where a parameter or its description says
-millimetres/degrees; read the unit before sending a number. CAD operations are not transactional: a failed build
-leaves partial geometry, which the result reports. Every graph build prints run_id=...; replay_run reproduces it.
+millimetres/degrees; read the unit before sending a number. CAD operations are not transactional: a failed design step is rolled
+back, a failed run of the low-level tools leaves partial geometry. Every build prints run_id=...; replay_run reproduces it.
 Read get_recipe('reverse') / get_recipe('forward') before writing a Feature Graph."""
 
 # Tools that neither change the model/file system nor the active document.
 READ_ONLY = frozenset({
     "verify_state", "analyze_assembly", "analyze_model", "analyze_slddrw_test", "get_selection", "get_recipe",
-    "prepare_drawing", "annotate_regions", "verify_against_interpretation", "ask_user",
+    "prepare_drawing", "annotate_regions", "verify_against_interpretation", "ask_user", "design_history",
 })
 # Tools that can discard work (an unsaved close, a feature delete/suppress).
-DESTRUCTIVE = frozenset({"close_document", "edit_feature"})
+DESTRUCTIVE = frozenset({"close_document", "edit_feature", "design_step", "design_undo", "design_redo"})
 # Mutating tools that are safe to repeat with the same arguments.
 IDEMPOTENT = frozenset({"ensure_ready", "activate_document", "set_part_material", "save_document"})
 # job_status only reads progress (cancel=True is a request, and still never deletes geometry).

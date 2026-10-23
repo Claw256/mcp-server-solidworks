@@ -184,7 +184,7 @@ def get_recipe(
     'mapping_assembly'), then 'verification' before labeling anything. 'forward' holds the
     INTENT→IR authoring discipline (grammar cheat-sheet, anchor design without an original,
     computed-expectation self-verification) — read it FIRST when writing a graph for
-    submit_feature_graph from design intent. 'reverse' holds the DXF/DWG drawing→part
+    design_new/design_step from design intent. 'reverse' holds the DXF/DWG drawing→part
     reconstruction discipline (scale/DIMLFAC, edge classes, view clustering, projection
     standard, contour tiers, sheet-metal bend arithmetic) — read it FIRST when rebuilding a part
     from a 2D drawing, before you interpret a single number of `analyze_drawing`'s answer.
@@ -281,8 +281,8 @@ Reconstruct the machined part shown in this drawing: {file_path}
    assumptions). Ask the user ONLY about things the drawing cannot settle: analyze_drawing lists them as
    OPEN QUESTIONS (ids, evidence, options, default) — put them to the user with ask_user (or in chat),
    then pass the replies as analyze_drawing(answers=...). Never build around a doubt on your own.
-4. Build with submit_feature_graph (METERS, RADIANS).
-5. Verify with verify_against_interpretation (bbox_mm, volume_mm3, holes, cg_mm), fix once, resubmit.
+4. Build with design_new/design_step (METERS, RADIANS).
+5. Verify with verify_against_interpretation (bbox_mm, volume_mm3, holes, cg_mm), fix once with design_step.
 6. Finish with the ledger: verified / assumed / could not model / could not read (analyze_drawing prints an
    ASSUMPTIONS LEDGER of the values that were defaulted or answered by the user — carry it over)."""
 
