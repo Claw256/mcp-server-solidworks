@@ -99,6 +99,8 @@
     <Compile Include="Services\SolidWorksService.Diagnostics.cs" />
     <Compile Include="Services\FeatureErrorNames.cs" />
     <Compile Include="Services\MeshImportOptions.cs" />
+    <Compile Include="Services\ExportFormats.cs" />
+    <Compile Include="Services\SolidWorksService.Export.cs" />
     <Compile Include="Services\SolidWorksService.Checkpoint.cs" />
     <Compile Include="Services\SolidWorksService.FeatureTree.cs" />
     <Compile Include="Services\SolidWorksService.Sketch.cs" />
@@ -106,7 +108,12 @@
     <Compile Include="Services\SolidWorksService.SheetMetal.cs" />
     <Compile Include="Services\SolidWorksService.Drawing.cs" />
     <Compile Include="Services\SolidWorksService.Analyze.cs" />
+    <Compile Include="Services\SolidWorksService.Analyze.Overview.cs" />
+    <Compile Include="Services\SolidWorksService.Analyze.Measure.cs" />
+    <Compile Include="Services\SolidWorksService.Analyze.Sketch.cs" />
+    <Compile Include="Services\SolidWorksService.Analyze.FeatureDefs.cs" />
     <Compile Include="Services\SolidWorksService.Assembly.cs" />
+    <Compile Include="Services\SolidWorksService.Assembly.Interference.cs" />
     <Compile Include="Services\SolidWorksService.Image.cs" />
     <Compile Include="Services\SolidWorksService.HoleWizard.cs" />
     <Compile Include="Startup.cs" />

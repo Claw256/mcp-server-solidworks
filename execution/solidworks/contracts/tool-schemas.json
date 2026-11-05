@@ -198,12 +198,12 @@
   "output": "→ see execution-response.json"
  },
  "create_drawing": {
-  "description": "Opens a new SolidWorks drawing document (A3 sheet, 1:1 scale). model_path is optional — an empty drawing is created if omitted. add_drawing_view requires the referenced part to be saved to disk.",
+  "description": "Opens a new SolidWorks drawing document (A3 sheet, 1:1 scale). model_path is optional: when given, the part/assembly is opened silently if not already open so add_drawing_view can project it (the drawing stays active); an empty drawing is created if omitted. add_drawing_view requires the referenced part to be saved to disk.",
   "input": {
    "operation_id": "string (required, unique idempotency key)",
    "state_version": "integer (required, must match current execution state)",
    "params": {
-    "model_path": "string (optional — full path to the part/assembly to reference; empty drawing created if omitted)"
+    "model_path": "string (optional — full path to a saved .sldprt/.sldasm; opened silently if not already open; empty drawing created if omitted)"
    }
   },
   "output": "→ see execution-response.json"
@@ -242,14 +242,14 @@
   "output": "→ see execution-response.json"
  },
  "add_drawing_dimension": {
-  "description": "Applies a smart dimension to a drawing view segment nearest to point (px, py). Same coordinate selection approach as add_dimension but operates in a drawing document. Requires active drawing document.",
+  "description": "Applies a smart dimension to a drawing view segment nearest to point (px, py). Same coordinate selection approach as add_dimension but operates in a drawing document. The value is read back after being set; drawing dimensions on projected edges are usually driven, so DIMENSION_VALUE_NOT_APPLIED is returned when it cannot be applied. Requires active drawing document.",
   "input": {
    "operation_id": "string (required, unique idempotency key)",
    "state_version": "integer (required, must match current execution state)",
    "params": {
     "px": "number (X coordinate of a point on the target drawing segment, in sheet meters)",
     "py": "number (Y coordinate of a point on the target drawing segment, in sheet meters)",
-    "value": "number (dimension value in document units)",
+    "value": "number (dimension value in METERS (system units); read back after being set, DIMENSION_VALUE_NOT_APPLIED if SolidWorks keeps the measured value)",
     "label_offset_x": "number (optional, default 0.0)",
     "label_offset_y": "number (optional, default -0.015)"
    }
@@ -262,9 +262,10 @@
    "operation_id": "string (required, unique idempotency key)",
    "state_version": "integer (required, must match current execution state)",
    "params": {
-    "all_views": "boolean (optional, default true — insert into all views; false = only the currently selected view)",
+    "all_views": "boolean (optional, default true — insert into all views; false = only one view: view_name, else the active view)",
+    "view_name": "string (optional — with all_views=false, the view to insert into, e.g. 'Drawing View1'; it is selected for the call)",
     "include_unmarked": "boolean (optional, default false — also insert driving dims NOT marked for drawing, i.e. ALL driving dims; more complete but noisier. Use if marked-only inserts 0 dims)",
-    "eliminate_duplicates": "boolean (optional, default true — avoid inserting the same model dimension into more than one view)"
+    "eliminate_duplicates": "boolean (optional, default true — avoid inserting the same model dimension into more than one view; passed as InsertModelAnnotations3 DuplicateDims, documented 'True to eliminate duplicate dimensions')"
    }
   },
   "output": "→ see execution-response.json — result_geometry holds {inserted_count, all_views, include_unmarked}. inserted_count = number of dimensions placed (0 is valid; re-try with include_unmarked=true)."
@@ -276,7 +277,7 @@
    "state_version": "integer (required, must match current execution state)",
    "params": {
     "include_slots": "boolean (optional, default true — also add slot center marks/centerlines for linear & arc slots, not just round holes)",
-    "extended_lines": "boolean (optional, default true — draw the extended centerlines through each hole, not just a small cross)"
+    "extended_lines": "boolean (optional, default true — AutoInsertCenterMarks2 ExtendedLines with UseDocumentDefaults=false; size/gap/centerline font are read from the document settings, no connection lines)"
    }
   },
   "output": "→ see execution-response.json — result_geometry holds {center_marks, views_processed, include_slots}. center_marks = total center marks across all model views (0 if the part has no holes/slots)."
@@ -294,7 +295,7 @@
   "output": "→ see execution-response.json"
  },
  "add_section_view": {
-  "description": "Creates a SECTION VIEW to expose internal/blind features (e.g. a blind pocket's depth) as visible, dimensionable edges — the difficulty-3 capability. Two ways to define the cut: EDGE mode (edge_x,edge_y → cut ALONG an existing projected edge, best when a real edge lies on the desired plane) or LINE mode (x1,y1,x2,y2 → draw a cut line, best for cutting THROUGH a feature's interior such as a pocket middle where no edge exists). IDrawingDoc.CreateSectionViewAt5 (with a CreateSectionViewAt2 fallback) places the section at (px,py). Bumps state_version. NOTE: coordinate-based (#6); after it lands, re-run auto_dimension_drawing or add_drawing_dimension to dimension the now-visible depth. Repeated failed attempts can wedge section creation — restart on a clean drawing state.",
+  "description": "Creates a SECTION VIEW to expose internal/blind features (e.g. a blind pocket's depth) as visible, dimensionable edges — the difficulty-3 capability. Two ways to define the cut: EDGE mode (edge_x,edge_y → cut ALONG an existing projected edge, best when a real edge lies on the desired plane) or LINE mode (x1,y1,x2,y2 → draw a cut line, best for cutting THROUGH a feature's interior such as a pocket middle where no edge exists). IDrawingDoc.CreateSectionViewAt5 places the section at (px,py). Bumps state_version. NOTE: coordinate-based (#6); after it lands, re-run auto_dimension_drawing or add_drawing_dimension to dimension the now-visible depth. Repeated failed attempts can wedge section creation — restart on a clean drawing state.",
   "input": {
    "operation_id": "string (required, unique idempotency key)",
    "state_version": "integer (required, must match current execution state)",
@@ -309,13 +310,14 @@
     "py": "number (section-view placement Y, sheet meters)",
     "label": "string (optional, default 'A' — section label, e.g. 'A' → 'SECTION A-A')",
     "flip": "boolean (optional, default false — reverse the cut/viewing direction)",
-    "scale": "number (optional — section view scale; inherits the parent's if omitted)"
+    "scale": "number (optional — section view scale; inherits the parent's if omitted)",
+    "view_name": "string (optional — the parent model view to cut, e.g. 'Drawing View1'; default = the view whose outline contains the cut point)"
    }
   },
   "output": "→ see execution-response.json — result_geometry holds {section_view, label}."
  },
  "verify_state": {
-  "description": "Reads and returns the current CAD state without modifying the document, used to confirm expected state before or after operations. Succeeds whenever SolidWorks is attached; if no document is open it returns COMPLETED with cad_state.document_type = \"NONE\" and active_document = null (it does not fail).",
+  "description": "Reads and returns the current CAD state without modifying the document, used to confirm expected state before or after operations. Succeeds whenever SolidWorks is attached; if no document is open it returns COMPLETED with cad_state.document_type = \"NONE\" and active_document = null (it does not fail). With a document open, cad_state.document_type is PART, ASSEMBLY or DRAWING.",
   "input": {
    "operation_id": "string (required, unique idempotency key)",
    "state_version": "integer (required, must match current execution state)",
@@ -331,19 +333,19 @@
   "output": "{ status, comAttached, swLaunched, activeDocument, swVersion, stateVersion } (or comAttached=false + launchError/ensureError on failure; ensureError also carries solidworksProcessCount when the attach failed while a process was running)"
  },
  "export_document": {
-  "description": "Exports the active SolidWorks document to a file without closing it. DWG/DXF require an active drawing document. PDF uses SolidWorks PDF export options. state_version is NOT incremented (no CAD state change).",
+  "description": "Exports the active SolidWorks document to a file without closing it. DWG/DXF require an active drawing document. PDF of a drawing exports all sheets (IExportPdfData.SetSheets, no viewer); DWG/DXF options (version, units, line styles, multi-sheet) come from the user's SolidWorks export settings. The file_path extension must match the format (INVALID_PARAMETER otherwise; IGES .iges is corrected to .igs). COMPLETED requires the file to exist, be non-empty and be freshly written (EXPORT_FILE_MISSING otherwise). state_version is NOT incremented (no CAD state change).",
   "input": {
    "operation_id": "string (required, unique idempotency key)",
    "state_version": "integer (required, must match current execution state)",
    "params": {
-    "format": "string (required: 'STEP', 'IGES', 'STL', 'PDF', 'DWG', 'DXF' — DWG/DXF require active drawing doc)",
+    "format": "string (required: 'STEP', 'IGES', 'STL', 'PDF', 'DWG', 'DXF' — DWG/DXF require active drawing doc; file_path extension must match)",
     "file_path": "string (required — full output path including filename and extension)"
    }
   },
   "output": "→ see execution-response.json"
  },
  "batch_export": {
-  "description": "Exports the active document to multiple formats in one call. Each format saved as file_path_base.<ext>. DWG/DXF skipped if active doc is not a drawing. Partial success reported in response Features list. state_version is NOT incremented.",
+  "description": "Exports the active document to multiple formats in one call. Each format saved as file_path_base.<ext>; a format counts as exported only if its file exists, is non-empty and was just written. PDF of a drawing exports all sheets. DWG/DXF skipped if active doc is not a drawing. Partial success reported in response Features list. state_version is NOT incremented.",
   "input": {
    "operation_id": "string (required, unique idempotency key)",
    "state_version": "integer (required, must match current execution state)",
@@ -378,13 +380,13 @@
   "output": "→ see execution-response.json"
  },
  "analyze_model": {
-  "description": "Analyzes the active part document without modifying it. Does NOT increment state_version. analysis_type='mass_properties': returns volume, surface_area, center of gravity (cx/cy/cz). analysis_type='geometry': returns bodies, faces, edges, vertices counts. analysis_type='bbox': EXACT axis-aligned extents of all solid bodies as JSON {min,max,size} in meters (IBody2.GetExtremePoint). Cylindrical faces in 'faces' also carry u_span/v_span and hole (true = concave, i.e. a hole rather than a boss). analysis_type='edges': returns one JSON object listing every solid edge with start/end/midpoint 3D coords (meters, rounded to 6 decimals; closed/circular edges also include length) — pick an edge index (the `i` field) for add_edge_feature edge_indices, or a midpoint for coordinate selection. Slowest mode on very large parts (COM-bound). analysis_type='faces': returns one JSON object listing every solid face with a stable index `i` (planar faces also carry normal, area, and a representative on-plane point) — pick a face index for create_sketch(on_face, face_index). analysis_type='features': the COMPACT part recipe (default 'understand the part' read) — ordered feature tree (name/type, suppressed only when true), deduped driving dimensions (SI, rounded to 6 decimals), a per-sketch SUMMARY (segment counts + an inline {cx,cy,r} for single-full-circle profiles; NO per-segment coordinate dump), each sketch's plane {ref:'Front/Top/Right Plane', offset}, each extrude/cut's {end, depth (blind only), reversed}, pattern semantics, and equations + globals; features are in tree (history) order. analysis_type='sketch' (requires 'name'): ONE sketch's full geometry (every segment, rounded to 6 decimals) + plane — use only when exact sketch coordinates are needed. analysis_type='feature_map': per-feature geometry ATTRIBUTION — walks the tree base→end with the ROLLBACK BAR (swMoveRollbackBarTo_e) and diffs the topology between stops inside the tool; consumed_edges (both endpoints gone — trimmed neighbours excluded) are the deterministic fillet/chamfer edge anchors (PRE-feature geometry), created_faces are genuinely new surfaces (trimmed existing planes excluded). Non-destructive: the bar is restored to the end in finally; nothing is saved.",
+  "description": "Analyzes the active part document without modifying it. Does NOT increment state_version. analysis_type='mass_properties': returns volume, surface_area, center of gravity (cx/cy/cz) and, from IMassProperty2 (CreateMassProperty2), mass, density and the principal moments pmoi_1..3 (SI). analysis_type='geometry': returns bodies, faces, edges, vertices counts. analysis_type='bbox': EXACT axis-aligned extents of all solid bodies as JSON {min,max,size} in meters (IBody2.GetExtremePoint). Cylindrical faces in 'faces' also carry u_span/v_span and hole (true = concave, i.e. a hole rather than a boss). analysis_type='edges': returns one JSON object listing every solid edge with start/end/midpoint 3D coords (meters, rounded to 6 decimals; closed/circular edges also include length) — pick an edge index (the `i` field) for add_edge_feature edge_indices, or a midpoint for coordinate selection. Slowest mode on very large parts (COM-bound). analysis_type='faces': returns one JSON object listing every solid face with a stable index `i` (planar faces also carry normal, area, and a representative on-plane point) — pick a face index for create_sketch(on_face, face_index). analysis_type='features': the COMPACT part recipe (default 'understand the part' read) — ordered feature tree (name/type, suppressed only when true), deduped driving dimensions (SI, rounded to 6 decimals), a per-sketch SUMMARY (segment counts + an inline {cx,cy,r} for single-full-circle profiles; NO per-segment coordinate dump), each sketch's plane {ref:'Front/Top/Right Plane', offset}, each extrude/cut's {end, depth (blind only), reversed}, pattern semantics, and equations + globals; features are in tree (history) order. analysis_type='sketch' (requires 'name'): ONE sketch's full geometry (every segment, rounded to 6 decimals) + plane — use only when exact sketch coordinates are needed. analysis_type='feature_map': per-feature geometry ATTRIBUTION — walks the tree base→end with the ROLLBACK BAR (swMoveRollbackBarTo_e) and diffs the topology between stops inside the tool; consumed_edges (both endpoints gone — trimmed neighbours excluded) are the deterministic fillet/chamfer edge anchors (PRE-feature geometry), created_faces are genuinely new surfaces (trimmed existing planes excluded). Non-destructive: the bar is restored to the end in finally; nothing is saved. analysis_type='overview': ONE read of how the part is modelled - ordered feature tree with type, suppressed, per-feature rebuild error/warning (IFeature.GetErrorCode2) and driving dimensions, rollback_at_end, equations, body count, bbox, mass properties, configurations (names, active, per-feature suppressed_in via IFeature.IsSuppressed2) and file-level custom properties (read-only; the adapter adds the design-session node map). analysis_type='measure' (requires 'name'): IModelDocExtension.CreateMeasure / IMeasure.Calculate between faces/edges addressed by the same indices as 'faces'/'edges' (a point supports distance only). The 'sketch' mode also reports sketch health (ISketch.GetConstrainedStatus, per-segment ISketchSegment.Status, relations via RelationManager.GetRelations) and the 'features' mode adds feature definitions (revolve, fillet/chamfer, hole wizard, loft, sweep, extrude draft/thin/direction 2/start condition/up-to) and a per-sketch status string.",
   "input": {
    "operation_id": "string (required, unique idempotency key)",
    "state_version": "integer (required, must match current execution state)",
    "params": {
-    "analysis_type": "string (required: 'mass_properties', 'geometry', 'bbox', 'bodies', 'edges', 'faces', 'features', 'sketch', or 'feature_map')",
-    "name": "string (required only for analysis_type='sketch' — the sketch feature name, e.g. 'Sketch2')",
+    "analysis_type": "string (required: 'mass_properties', 'geometry', 'bbox', 'bodies', 'edges', 'faces', 'features', 'sketch', 'feature_map', 'overview', or 'measure')",
+    "name": "string (analysis_type='sketch': the sketch feature name, e.g. 'Sketch2'; analysis_type='measure': JSON {\"a\": E, \"b\": E, \"kind\": \"distance|angle|radius|diameter|length|area\"} with E = {\"face\": i} | {\"edge\": i} | {\"point\": [x,y,z] meters}; b optional for radius/diameter/length/area)",
     "from_feature": "string (optional, feature_map only — start the walk at this tree feature name; default = tree base)",
     "to_feature": "string (optional, feature_map only — end the walk at this tree feature name; default = tree end)",
     "near": "string (optional, edges/faces only — JSON '[x,y,z]' in meters; return only entities nearest this point instead of the full dump, each annotated with dist and its stable index i; blank = full dump, backward compatible)",
@@ -392,7 +394,7 @@
     "axis": "string (optional, edges/faces only — JSON '[x,y,z]'; keep only entities whose direction is ~parallel to axis: faces filter by planar NORMAL, edges by chord direction)"
    }
   },
-  "output": "→ see execution-response.json — results encoded in CadState.Features list. mass_properties/geometry: flat 'key=value' strings. edges: a single JSON string {edge_count, edges:[{i,start,end,mid}]} (closed/circular edges also carry length). faces: a single JSON string {face_count, faces:[{i, planar, area, normal?, point?}]} (normal/point only for planar faces). features: a single consolidated JSON string {feature_count, features[], equations[]} — sketches carry a summary (counts [+circle]); NO raw segments. sketch: a single JSON string {name, sketch:{counts, segments[]}, plane} for the one named sketch. feature_map: a single JSON string {feature_count, map:[{feature, type, suppressed?, delta:{faces,edges,vertices}, consumed_edges:[{mid,len}], created_faces:[{point, normal?, planar, area}]}]} — coords in meters rounded to 6 decimals; delta/consumed/created present only for unsuppressed solid-affecting features (sketches/ref geometry are listed name+type only)."
+  "output": "→ see execution-response.json — results encoded in CadState.Features list. mass_properties/geometry: flat 'key=value' strings. edges: a single JSON string {edge_count, edges:[{i,start,end,mid}]} (closed/circular edges also carry length). faces: a single JSON string {face_count, faces:[{i, planar, area, normal?, point?}]} (normal/point only for planar faces). features: a single consolidated JSON string {feature_count, features[], equations[]} — sketches carry a summary (counts [+circle]); NO raw segments. sketch: a single JSON string {name, sketch:{counts, segments[]}, plane} for the one named sketch. feature_map: a single JSON string {feature_count, map:[{feature, type, suppressed?, delta:{faces,edges,vertices}, consumed_edges:[{mid,len}], created_faces:[{point, normal?, planar, area}]}]} — coords in meters rounded to 6 decimals; delta/consumed/created present only for unsuppressed solid-affecting features (sketches/ref geometry are listed name+type only). overview: a single JSON string {document:{title,type}, feature_count, features:[{name,type,suppressed?,suppressed_in?,error?:{code,error,warning},dimensions?,in_folder?}], rollback_at_end, rolled_back_from?, equations, bodies:{count,faces,edges}, bbox:{min,max,size}, mass:{volume_m3,surface_area_m2,cg,mass_kg?,density_kg_m3?,principal_moments_kgm2?}, configs:{names,active,per_feature_suppression}, custom_properties?}. measure: a single JSON string with only the relevant keys of distance_mm, angle_deg, radius_mm, diameter_mm, length_mm, area_mm2 (millimetres/degrees, 4 dp). sketch adds health:{status,segment_status?,relations:[{type,entities}],over_defining?,dangling_count?}."
  },
  "analyze_drawing": {
   "description": "[ADAPTER-ONLY — no C# case] Reads a 2D technical drawing (.DXF, .DWG or .SLDDRW; a DWG/SLDDRW is converted to DXF automatically) and returns ONE OF TWO SHAPES, chosen by the READER, never the caller: DIRECT_BUILDABLE (a short plain-text summary of a flat pattern already lowered to Feature Graph IR — blank, thickness + its source, each bend with its edge-class corroboration, skipped bends, expected volume; the contour deliberately NOT echoed back, so it never costs tokens twice), or 'NOT_DIRECT | <gate reason>' followed by the WHOLE `draw`-dialect artifact. SINGLE HOME FOR THE PAYLOAD LEGEND (2026-09-07, payload phase 5): this tool's model-facing docstring in server.py documents what every field MEANS — the edge classes, the class-grouped index-carrying `lines`, `open_singles`, `seq`, the ellipse provenance, the graded alignment, `tier`, `printed`/`printed_mismatch`/`kind_from`/`measures` — because that description reaches the model whether or not it ever calls get_recipe, which a recipe section cannot promise (ADR-077). The recipe's `reverse` section carries the DECISIONS only, and neither repeats the other. Guidance attached to a SINGLE flag is emitted as an adapter-side ADVISORIES block, only when that flag actually fires. Every number is TRUE model mm (DIMLFAC already applied, per view).",
@@ -405,7 +407,7 @@
     "page": "integer (optional, PDF only, 1-based, default 1)",
     "pen_mm": "number (optional, PDF only, default 0 = every pen) - keep only primitives stroked with this width (mm) as part geometry; sheet.pdf.pens lists the pens and pen_suggested_mm the arc-richest one",
     "scale": "string (optional, PDF only - drawing scale like '1:2' (paper:true); overrides the title-block text; default '' = read it from the page, else ASSUME 1:1 and say so)",
-    "layout": "string (optional, default '' = every DXF layout merged; a layout NAME reads that sheet alone - sheet.layouts lists the names and entity counts)",
+    "layout": "string (optional, default '' = auto: the one layout with content, Model first - when several have content only one is read and sheet.layout_auto names the ones ignored; a layout NAME reads that sheet alone; '*' merges every layout on purpose - sheet.layouts lists the names and entity counts)",
     "answers": "string (optional, JSON object {question_id: value}) - answers to the OPEN QUESTIONS the previous analyze_drawing returned, e.g. {\"bend_1\":\"l:5\",\"thickness\":\"2.0\"}; applied to a copy of the artifact, which is then re-gated",
     "accept_defaults": "boolean (optional, default false) - build despite open BLOCKING questions by taking each default (an unmatched bend note is left unbuilt as a declared gap); mode=ir|build otherwise returns NEEDS_INPUT and builds nothing",
     "mode": "string enum (optional, default 'auto') - 'auto': the gate picks DIRECT_BUILDABLE (a short plain-text summary of an already-lowered flat pattern) or 'NOT_DIRECT | <reason>' followed by the WHOLE analysis; 'ir': the lowered Feature Graph IR without building; 'build': lower AND build through pycompiler (opens a new part, bumps state_version). ONE FORMAT since 2026-09-07: the first-turn SUMMARY and the per-view PULL (`view='v0'`) were retired together with 'full' because, once the wire form landed, the complete artifact measured SMALLER on all 10 samples than a summary plus the pulls it forced (f-3: 14.0 KB against 28.7).",
@@ -674,7 +676,7 @@
   "output": "COMPLETED | now at step N (label) | ... or FAILED | NOTHING_TO_REDO | DESIGN_DRIFT | ..., ending with design_id=<id> step=N head=N/total | run_id=<id> | state_version=<n>"
  },
  "design_history": {
-  "description": "ADAPTER-ONLY orchestration - read-only: lists the design's steps with labels and what each changed, the head marker, undone steps available to redo and the current node ids/types. Reads the persisted journal, so it survives an adapter restart.",
+  "description": "ADAPTER-ONLY orchestration - read-only: lists the design's steps with labels and what each changed, the head marker, undone steps available to redo and the current node ids/types. Each step shows the latest compare_to_reference / verify_against_interpretation score recorded at it (IoU, FAIL rows) with a trend (improved | worse | same) against the previous checked step. Reads the persisted journal, so it survives an adapter restart.",
   "input": {
    "operation_id": "n/a at this level — each lowered sub-op carries its own operation_id (derived from the run id) and state_version on /api/tool/execute",
    "state_version": "n/a at this level — the adapter resyncs its local state_version from GET /state after the run",
@@ -698,32 +700,36 @@
   "output": "One-line report: verified_criteria PASS/FAIL | topology A/B (EXACT|DIFFER) | volume A/B + dV% | area A/B + dA% | cg_distance. With detail='faces', a trailing faces: matched/MISSING/EXTRA breakdown."
  },
  "verify_against_interpretation": {
-  "description": "ADAPTER-ONLY orchestration (no ToolController/SolidWorksService case) — mechanical PASS/FAIL check of the active built part against Claude's interpretation of a drawing. Measures bbox (analyze_model bbox), mass properties and faces, then compares per item; cg_mm catches mirrored / wrong-face features that volume cannot. Read-only.",
+  "description": "ADAPTER-ONLY orchestration (no ToolController/SolidWorksService case) — mechanical PASS/FAIL check of the active built part against Claude's interpretation of a drawing. Measures bbox (analyze_model bbox), mass properties and faces, then compares per item; cg_mm catches mirrored / wrong-face features that volume cannot. Optional profile rows run the compare_to_reference pipeline per view and dimensions rows are auto-measured through analyze_model(measure); a summary is recorded on the current design step. Read-only apart from that record.",
   "input": {
    "operation_id": "n/a at this level — each underlying read carries its own operation_id (uuid4) on /api/tool/execute",
    "state_version": "n/a at this level — the underlying calls thread the adapter's tracked state_version",
    "params": {
-    "expected": "string (optional, default '' = check against what the last analyze_drawing build implies: volume and round-hole sizes/counts derived from the artifact; keys you pass override those. Otherwise a JSON object in MILLIMETRES, all keys optional: bbox_mm [x,y,z], bbox_ordered, volume_mm3, volume_tol_pct, cg_mm [x,y,z], cg_tol_mm, holes [{diameter_mm, count}], bolt_circles [{center_mm, axis, radius_mm, diameter_mm, count}] (design intent: holes of one size on one circle), symmetric [\"X\",\"Z\"] (design intent: bbox centred on the origin), tol_mm)"
+    "expected": "string (optional, default '' = check against what the last analyze_drawing build implies: volume and round-hole sizes/counts derived from the artifact; keys you pass override those. Otherwise a JSON object in MILLIMETRES, all keys optional: bbox_mm [x,y,z], bbox_ordered, volume_mm3, volume_tol_pct, cg_mm [x,y,z], cg_tol_mm, holes [{diameter_mm, count}], bolt_circles [{center_mm, axis, radius_mm, diameter_mm, count}] (design intent: holes of one size on one circle), symmetric [\"X\",\"Z\"] (design intent: bbox centred on the origin), profile [{view, reference, region [x0,y0,x1,y1] page points, page, min_iou default 0.97}] (silhouette overlap per view), dimensions [{name, a, b, kind distance|angle|radius|diameter|length, value_mm | value_deg, tol_mm | tol_deg}] with a/b = {face:i} | {edge:i} | {point:[x,y,z] meters}, tol_mm)"
    }
   },
   "output": "Multi-line report: verifier verdict PASS/FAIL, one [PASS|FAIL|WARN] row per compared item with expected/built/delta, and [NOT CHECKED] rows for anything that could not be measured."
  },
  "prepare_drawing": {
-  "description": "ADAPTER-ONLY (no ToolController/SolidWorksService case) — makes a PDF/image drawing legible for Claude's own vision: renders the page (or one region) as MCP image tiles sized to ALWAYS fit the model's image limits (tool_result images over the limit are rejected, not downscaled), each with its origin/scale so pixel coordinates map back to page points, plus the EXACT text layer (dimension strings with coordinates). kind=vector|mixed|scan tells whether numbers are exact or must be read by vision. Requires optional PyMuPDF.",
+  "description": "ADAPTER-ONLY (no ToolController/SolidWorksService case) — makes a PDF/image/DXF/DWG/SLDDRW drawing legible for Claude's own vision: an overview plus view-aligned ~300 dpi tiles (at most max_images per call; meta.tile_index lists every tile's clip in page points so more can be requested with `tiles`), every image sized to ALWAYS fit the model's image limits AND the relay byte cap, each with its origin/scale so pixel coordinates map back to page points, plus the EXACT text layer (lines with x0,y0,x1,y1,rotation; filtered to `region`; paged). meta reports dpi_used, px_per_mm_paper, min_text_px, text_layer_reliability (exact|ocr|outlined|none), scale_guess, warnings. Requires optional PyMuPDF.",
   "input": {
    "operation_id": "n/a — never reaches the execution layer",
    "state_version": "n/a — never reaches the execution layer",
    "params": {
-    "file_path": "string (required — .pdf or .png/.jpg/.tif/.bmp)",
+    "file_path": "string (required — .pdf, .png/.jpg/.tif/.bmp, or .dxf/.dwg/.slddrw)",
     "page": "integer (optional, 1-based, default 1)",
     "region": "string (optional — JSON [x0,y0,x1,y1] in PAGE POINTS to zoom one area; default = overview + tiles)",
-    "dpi": "integer (optional, default 300 — lowered automatically so every image fits the tier limits)"
+    "dpi": "integer (optional, default 300, clamped 30..600; never lowered silently — meta.warnings says when a tile is limited)",
+    "tiles": "string (optional — JSON list of tile numbers from meta.tile_index, 0 = overview; default = overview + the first tiles)",
+    "max_images": "integer (optional, default 4, max 8 — images returned per call)",
+    "text_offset": "integer (optional, default 0 — text layer paging)",
+    "text_limit": "integer (optional, default 300 — text items per call)"
    }
   },
-  "output": "[JSON text {file,page,pages,kind,page_pt,images:[{n,clip,px_per_pt,width,height}],text_layer:{items:['text@x,y'],...},note}, image tiles...]"
+  "output": "[JSON text {file,page,pages,kind,page_pt,page_mm_on_paper (not for raster),source_px (raster only),rotation?,images:[{n,tile,clip,px_per_pt,dpi,px_per_mm_paper,min_text_px,width,height,bytes}],dpi_used,px_per_mm_paper,min_text_px,tile_index:[{i,clip,kind,content,dpi,px_per_mm_paper,w_px,h_px}],text_layer_reliability,text_layer:{total,offset,shown,truncated,next_offset?,items:['text@x0,y0,x1,y1[,rN]']},scale_guess?,to_source?,warnings?,note}, image tiles...]"
  },
  "export_image": {
-  "description": "Captures the ACTIVE document's graphics view as an image (IModelDoc2.ShowNamedView2 + ViewZoomtofit2 + SaveBMP). Changes the view orientation only; does NOT increment state_version. The execution layer takes ONE view and writes a .bmp; the MCP adapter loops up to 4 views (comma list), sizes each so it always fits the model's image limits, converts BMP to PNG and returns MCP image content.",
+  "description": "Captures the ACTIVE document's graphics view as an image (IModelDoc2.ShowNamedView2 + ViewZoomtofit2 + SaveBMP). Optional style (IModelView.DisplayMode), section (graphics-only ISectionViewData section view), zoom_to and highlight (selection colour; ViewZoomToSelection) make the picture legible. Everything it changes (view orientation/zoom, display style, selection, section view) is restored in a finally block, so the model and the user's view are left as found; does NOT increment state_version. The execution layer takes ONE view and writes a .bmp; the MCP adapter loops up to 4 views (comma list), sizes each so it always fits the model's image limits, converts BMP to PNG, optionally draws a mm grid and face/edge index labels over it (Pillow + numpy; projected with refdiff.frame_from_bbox and the measured view_frame) and returns MCP image content.",
   "input": {
    "operation_id": "string (required, unique idempotency key)",
    "state_version": "integer (required, must match current execution state)",
@@ -732,25 +738,31 @@
     "width": "integer (optional, default 1280 at the adapter / 1024 in the execution layer; 64-4096; the adapter reduces the image returned to the model to fit the image limits and the relay size cap; a saved file keeps the requested size)",
     "height": "integer (optional, default 960 at the adapter / 768 in the execution layer; 64-4096)",
     "file_path": "string (execution layer: required, full .bmp output path; adapter: optional, keeps the first view's full-size BMP there plus a same-name .png, otherwise a temp file that is deleted)",
-    "hires": "boolean (adapter only, optional, default false: keep a full-size file for the first view even without file_path, saved in the staging folder; the execution layer never sees it)"
+    "hires": "boolean (adapter only, optional, default false: keep a full-size file for the first view even without file_path, saved in the staging folder; the execution layer never sees it)",
+    "style": "string enum (optional: shaded (with edges) | hidden_lines (hidden edges greyed) | wireframe; default leaves the display style alone; restored afterwards)",
+    "section": "JSON object string (optional) {plane: front|top|right|<reference plane name>, offset_mm?: number, reverse?: boolean} - a graphics-only section view (no rebuild) removed afterwards; refused when a section view is already active; part or assembly only",
+    "zoom_to": "JSON object string (optional), exactly one of {face: i} | {edge: i} | {feature: name} | {bbox_mm: [xmin,ymin,zmin,xmax,ymax,zmax]} (every face whose box meets it); i is the analyze_model faces/edges index; part documents only",
+    "highlight": "JSON object string (optional) {faces?: [i], edges?: [i], features?: [name]}, selected for the capture so they show in the selection colour, then the original selection is restored; part documents only",
+    "grid": "boolean (adapter only, optional, default false: draw grid lines and mm values in MODEL coordinates)",
+    "labels": "string enum (adapter only, optional: faces | edges | both - draw f<i> / e<i> index labels, the same i as analyze_model faces/edges; front-facing planar faces, occlusion not tested)"
    }
   },
-  "output": "Execution layer: COMPLETED with the .bmp path in CadState.Features. Adapter: [text 'Image n: view WxH; ...', PNG image content...]."
+  "output": "Execution layer: COMPLETED with the .bmp path in CadState.Features, then view_frame={has_perspective,axis_aligned,right,up} (measured from IModelView.Transform) and, only when something could not be restored, capture_warnings=[...]; FAILED INVALID_PARAMETER / FEATURE_NOT_FOUND / WRONG_DOCUMENT_TYPE / EXPORT_FAILED. Adapter: [text 'Image n: view WxH; ...' (+ overlay outcome and capture warnings), PNG image content...]. grid/labels need an axis-aligned orthographic view of the whole model (not isometric, no zoom_to/section); otherwise the plain image and a one-line note (never a failure)."
  },
  "annotate_regions": {
-  "description": "ADAPTER-ONLY (no ToolController/SolidWorksService case) — self-check for Claude's own localisations on a PDF/image drawing: draws the supplied boxes/points (PAGE POINTS) in red with labels on an in-memory render of the page and returns the region as an image (sized to fit the model's image limits) plus each mark's pixel position. The file is never modified. Requires optional PyMuPDF.",
+  "description": "ADAPTER-ONLY (no ToolController/SolidWorksService case) — self-check for Claude's own localisations on a PDF/image/DXF/DWG/SLDDRW drawing: draws the supplied boxes/points (PAGE POINTS) in red with labels on an in-memory render of the page and returns the region as an image (sized to fit the model's image limits) plus each mark's pixel position. The file is never modified. Requires optional PyMuPDF.",
   "input": {
    "operation_id": "n/a — never reaches the execution layer",
    "state_version": "n/a — never reaches the execution layer",
    "params": {
-    "file_path": "string (required — .pdf or .png/.jpg/.tif/.bmp)",
+    "file_path": "string (required — .pdf, .png/.jpg/.tif/.bmp, or .dxf/.dwg/.slddrw)",
     "marks": "string (required — JSON list of {box:[x0,y0,x1,y1] | point:[x,y], label?} in PAGE POINTS)",
     "page": "integer (optional, 1-based, default 1)",
     "region": "string (optional — JSON [x0,y0,x1,y1] in page points; default = the marks plus a margin)",
-    "dpi": "integer (optional, default 300 — lowered automatically to fit the image limits)"
+    "dpi": "integer (optional, default 300, clamped 30..600; lowered only to fit the image size and byte caps — meta.image.dpi says what you got)"
    }
   },
-  "output": "[JSON text {file,page,image:{width,height,px_per_pt,clip},marks:[{label,kind,page_pt,px}]}, PNG image]"
+  "output": "[JSON text {file,page,image:{width,height,px_per_pt,dpi,clip,bytes},marks:[{label,kind,page_pt,px}],to_source?,warnings?}, PNG image]"
  },
  "open_new_assembly": {
   "description": "Opens a new blank ASSEMBLY document (the twin of open_new_part). Template: explicit template_path, else the user-configured default assembly template, else the first *.asmdot found. Bumps state_version.",
@@ -764,13 +776,16 @@
   "output": "-> see execution-response.json - CadState.ActiveDocument = new doc title; DocumentType = ASSEMBLY"
  },
  "analyze_assembly": {
-  "description": "READ-ONLY assembly analysis (B1, ADR-047) - does NOT change state. analysis_type='components': top-level component occurrences in FEATURE-TREE order (GetComponents is arbitrary - proven live), each with name (instance-numbered Name2), source path, config, fixed/suppressed, children count (subassembly = out-of-scope hit), and the FULL Transform2 (13 numbers: 3x3 rotation row-major + translation + scale, 9dp - the verification ground truth). 'mates': the MateGroup's subfeatures in CREATION order - type/alignment from the ENUMS (never localized display names), SI value for distance/angle from the mate's own dimension, and per entity: owning component, kind (swMateEntity2ReferenceType_e name), EntityParams (ASSEMBLY-space location+direction+radii). 'faces'/'edges' (requires 'component'): that component's entity list with stable indices for add_mate's INDEX-first selection - coordinates are COMPONENT-LOCAL (proven live; the payload carries the component transform for mapping).",
+  "description": "READ-ONLY assembly analysis (B1, ADR-047) - does NOT change state. analysis_type='components': top-level component occurrences in FEATURE-TREE order (GetComponents is arbitrary - proven live), each with name (instance-numbered Name2), source path, config, fixed/suppressed, children count (subassembly = out-of-scope hit), and the FULL Transform2 (13 numbers: 3x3 rotation row-major + translation + scale, 9dp - the verification ground truth). 'mates': the MateGroup's subfeatures in CREATION order - type/alignment from the ENUMS (never localized display names), SI value for distance/angle from the mate's own dimension, and per entity: owning component, kind (swMateEntity2ReferenceType_e name), EntityParams (ASSEMBLY-space location+direction+radii). 'interference': overlap volume per component pair (IInterferenceDetectionMgr; the pane is opened and closed, options restored) - components, volume_mm3, bbox/center in assembly-space meters, largest first, capped by limit with the total count. 'components' also carries hidden/out_of_date/constrained/solve/error status keys and 'mates' suppressed/flipped/lock_rotation/limits/error keys, only when readable, plus a one-line summary each. 'faces'/'edges' (requires 'component'): that component's entity list with stable indices for add_mate's INDEX-first selection - coordinates are COMPONENT-LOCAL (proven live; the payload carries the component transform for mapping).",
   "input": {
    "operation_id": "string (required, unique idempotency key)",
    "state_version": "integer (required, must match current execution state)",
    "params": {
-    "analysis_type": "string (required): 'components' | 'components_flat' (leaf occurrences across nesting levels, root-space transforms — wrapper flattening) | 'mates' | 'faces' | 'edges'",
-    "component": "string (required for faces/edges - the component's Name2, e.g. 'Shaft-1')"
+    "analysis_type": "string (required): 'components' | 'components_flat' (leaf occurrences across nesting levels, root-space transforms — wrapper flattening) | 'mates' | 'interference' | 'faces' | 'edges'",
+    "component": "string (required for faces/edges - the component's Name2, e.g. 'Shaft-1')",
+    "coincident": "boolean (optional, interference only, default false - treat touching/coincident faces as interference)",
+    "subassemblies_as_components": "boolean (optional, interference only, default false - do not report overlaps inside a subassembly)",
+    "limit": "integer (optional, interference only, default 20, max 200 - interferences returned, largest volume first)"
    }
   },
   "output": "-> see execution-response.json - CadState.Features[0] = one consolidated JSON string"
@@ -915,5 +930,23 @@
    }
   },
   "output": "-> see execution-response.json - Features = [the copy's path]; FAILED SAVE_FAILED / MISSING_PARAMETER / NO_ACTIVE_DOCUMENT"
+ },
+ "compare_to_reference": {
+  "description": "[ADAPTER-ONLY — no C# case] Diffs the active part's silhouette in one standard view against the same view of a reference (PDF page, DXF/DWG/SLDDRW drawing, crop or image). Captures the model view through export_image at 2560x1920 (whose second features item view_frame={has_perspective,axis_aligned,right,up} reports the MEASURED screen axes from IModelView.Transform; refuses a perspective view) and the exact bbox through analyze_model, builds the model mask (per-row background estimate) and the reference mask, registers the reference to the model by bounding box (REGISTRATION_WEAK when the proportions disagree), and returns IoU, model-only/reference-only percentages, mismatch regions in view and model millimetres (kind model_has_extra | model_missing, touching which bbox edge, suspect features and design nodes via analyze_model feature_map) and an overlay image. A VECTOR reference (PDF page, or a DXF/DWG/SLDDRW rendered to one) is masked from its part pen only (cad-planner drawing/silhouette.py: pen auto-picked via pdf_read._pen_stats, the sheet frame skipped, flood-filled from the border) so dimension/extension lines, hatching, centre lines, text and the title block cannot skew the registration; a raster (scan, photo, picture) takes a four-edge background, an adaptive threshold and drops detached line work (dimension chains, leaders), the sheet frame and specks before registering. When region is omitted on a multi-view vector sheet the view cluster (drawing_prep.view_regions) whose part silhouette has the model view's proportions is used (AMBIGUOUS_VIEW when two fit equally). The overlay is decimated to 1280 px and kept under the relay byte budget. Overlap evidence only: an overall size error is not visible. A region with a single unambiguous suspect extrude/box node gets design_step_hint, a suggested design_step patch (meters) that is never applied. The result is recorded on the current design step. Inputs open through drawing_prep.open_input. Needs Pillow + numpy (requirements-compare.txt); PDFs need PyMuPDF.",
+  "input": {
+   "operation_id": "n/a at this level - the underlying calls carry their own operation_id (uuid4)",
+   "state_version": "n/a at this level - read-only; the underlying calls thread the adapter's tracked state_version",
+   "params": {
+    "reference": "string (required - absolute path to the .pdf, .dxf, .dwg, .slddrw, .png, .jpg, .bmp or .tif reference)",
+    "view": "string enum (optional, default 'front') - front | back | left | right | top | bottom; the model view matching the reference view",
+    "page": "integer (optional, default 1) - 1-based page of a PDF",
+    "region": "string (optional) - JSON [x0,y0,x1,y1] in page points isolating one view of a multi-view sheet; omitted on a multi-view vector sheet the view matching the model view's proportions is chosen (AMBIGUOUS_VIEW when two fit equally)",
+    "dpi": "integer (optional, default 200) - raster density for rasterised references (the raster path), clamped 50..400",
+    "fill": "boolean (optional, default true) - fill closed outlines (line drawings)",
+    "clean_px": "integer (optional, default 0) - erode/dilate pixels to drop thin lines still attached to a raster silhouette, clamped 0..8",
+    "localise": "boolean (optional, default true) - name suspect features/design nodes per region via analyze_model feature_map"
+   }
+  },
+  "output": "list: [JSON text, overlay PNG]. JSON: view, iou, model_only_pct, ref_only_pct, px_per_mm, registration{scale,aspect_error}, model_extent_mm, edge_tolerance_mm, reference_kind (vector|raster), pen_mm? (vector: the part pen used), region_used [x0,y0,x1,y1] page points, region_candidates? [{clip,aspect_error}] (auto-selected view), filtered [what was removed, e.g. 'line work x2', 'frame', '14 paths on other pens (...)'], regions[{kind,area_mm2,share_of_silhouette,view_mm,size_mm,touches_edge_of,axes,model_mm,suspect_features[{feature,type,hits,design_node?}],design_step_hint?{suggestion_only,patch,reasoning}}], verdict (match|close|differs), note?. Errors are 'FAILED | CODE | message' (COMPARE_UNAVAILABLE, FILE_NOT_FOUND, UNSUPPORTED_TYPE, PDF_PASSWORD, PDF_READER_UNAVAILABLE, DXF_RENDER_FAILED/DWG_RENDER_FAILED/SLDDRW_RENDER_FAILED, AMBIGUOUS_VIEW, BAD_VIEW, BAD_BBOX, REGISTRATION_WEAK, PERSPECTIVE_ON, VIEW_NOT_AXIS_ALIGNED, REFERENCE_UNREADABLE, COMPARE_MODEL_READ_FAILED, COMPARE_FAILED)."
  }
 }

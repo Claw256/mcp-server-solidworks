@@ -17,12 +17,19 @@ reports per-item PASS / FAIL / WARN with the deltas.
      "bolt_circles": [{"center_mm": [x, y, z], "axis": "Z", "radius_mm": 25.0,   # DESIGN INTENT: holes of
                        "diameter_mm": 6.0, "count": 6, "tol_mm": 0.1}],          #   this size on one circle
      "symmetric": ["X", "Z"],          # DESIGN INTENT: bbox is symmetric about the origin along these axes
+     "profile": [{"view": "front", "reference": "<path>", "region": [x0,y0,x1,y1], "page": 1,
+                  "min_iou": 0.97}],       # silhouette overlap vs a reference view (compare_to_reference)
+     "dimensions": [{"name": "boss height", "a": {"face": 3}, "b": {"face": 7}, "kind": "distance",
+                     "value_mm": 25.0, "tol_mm": 0.1}],   # auto-measured; kind distance|angle|radius|diameter|length
      "tol_mm": 0.1}                    # default dimensional tolerance
 
 `measured` (what analyze_model returned, SI METERS):
     {"bbox": {"min": [...], "max": [...], "size": [...]} | None,
-     "volume": m^3 | None, "cg": [x, y, z] | None, "faces": [<analyze_model faces entries>]}
+     "volume": m^3 | None, "cg": [x, y, z] | None, "faces": [<analyze_model faces entries>],
+     "profiles": [{"view", "min_iou", "iou", "model_only_pct", "ref_only_pct", "regions"} | {"view", "error"}],
+     "dimensions": [{"spec": <the expected entry>, "got": {distance_mm|angle_deg|...: n}} | {"spec", "error"}]}
 """
+import json
 import math
 
 _PASS, _FAIL, _WARN, _SKIP = "PASS", "FAIL", "WARN", "SKIP"
@@ -107,6 +114,64 @@ def merge_expected(derived, override):
     overridden = [k for k in (override or {}) if k in merged]
     merged.update(override or {})
     return merged, overridden
+
+
+_MEASURE_KEYS = {"distance": "distance_mm", "angle": "angle_deg", "radius": "radius_mm",
+                 "diameter": "diameter_mm", "length": "length_mm"}
+_ONE_ENTITY = ("radius", "diameter", "length")
+DEFAULT_MIN_IOU = 0.97
+_TOL_DEG = 0.5
+
+
+def _entity(e, where):
+    """Validate one measure entity {"face": i} | {"edge": i} | {"point": [x, y, z]} (point in METERS)."""
+    if not isinstance(e, dict) or len(e) != 1:
+        raise ValueError("%s must be one of {\"face\": i}, {\"edge\": i}, {\"point\": [x,y,z]}" % where)
+    (k, v), = e.items()
+    if k in ("face", "edge") and isinstance(v, int) and not isinstance(v, bool) and v >= 0:
+        return {k: v}
+    if k == "point" and isinstance(v, (list, tuple)) and len(v) == 3 and all(isinstance(c, (int, float)) for c in v):
+        return {"point": [float(c) for c in v]}
+    raise ValueError("%s: bad %r value %r" % (where, k, v))
+
+
+def measure_request(spec):
+    """The analyze_model(measure) `name` JSON for one `dimensions` entry; raises ValueError when malformed."""
+    if not isinstance(spec, dict) or spec.get("kind") not in _MEASURE_KEYS:
+        raise ValueError("dimensions entry needs kind: %s" % "|".join(_MEASURE_KEYS))
+    kind = spec["kind"]
+    label = spec.get("name") or kind
+    want = "value_deg" if kind == "angle" else "value_mm"
+    if not isinstance(spec.get(want), (int, float)) or isinstance(spec.get(want), bool):
+        raise ValueError("dimension %r needs a numeric %s (a real number from the drawing text, not a guess)" % (label, want))
+    req = {"a": _entity(spec.get("a"), "dimension %r a" % label), "kind": kind}
+    if kind not in _ONE_ENTITY:
+        req["b"] = _entity(spec.get("b"), "dimension %r b" % label)
+    return json.dumps(req)
+
+
+def _profile_row(m):
+    item = "profile %s" % m.get("view")
+    if m.get("error"):
+        return None, "%s (%s)" % (item, m["error"])
+    lim = float(m["min_iou"])
+    return _row(item, _PASS if m["iou"] >= lim else _FAIL,
+                "silhouette IoU %.3f (min %.3g), model-only %.2f%%, reference-only %.2f%%, %d mismatch region(s) "
+                "- overlap evidence, not a dimension" % (m["iou"], lim, m["model_only_pct"], m["ref_only_pct"], m["regions"])), None
+
+
+def _dimension_row(m, tol):
+    spec = m["spec"]
+    kind = spec["kind"]
+    item = "dimension %s" % (spec.get("name") or kind)
+    key = _MEASURE_KEYS[kind]
+    got = (m.get("got") or {}).get(key)
+    if m.get("error") or not isinstance(got, (int, float)):
+        return None, "%s (%s)" % (item, m.get("error") or "the measurement returned no %s" % key)
+    want, unit = (float(spec["value_deg"]), "deg") if kind == "angle" else (float(spec["value_mm"]), "mm")
+    lim = float(spec.get("tol_deg", _TOL_DEG)) if kind == "angle" else float(spec.get("tol_mm", tol))
+    return _row(item, _PASS if abs(got - want) <= lim else _FAIL,
+                "expected %.4g %s, measured %.4g %s, delta %.3g (tol %.3g)" % (want, unit, got, unit, got - want, lim)), None
 
 
 _AXES = {"X": (1.0, 0.0, 0.0), "Y": (0.0, 1.0, 0.0), "Z": (0.0, 0.0, 1.0)}
@@ -241,10 +306,17 @@ def evaluate(expected, measured):
                                  "bbox %s spans %.3f..%.3f mm; centre is %.3f mm from the origin (tol %.3g)"
                                  % (str(ax).upper(), lo[i] * 1000.0, hi[i] * 1000.0, off / 2.0, tol / 2.0)))
 
+    for row, why in ([_profile_row(m) for m in measured.get("profiles") or []]
+                     + [_dimension_row(m, tol) for m in measured.get("dimensions") or []]):
+        if row:
+            rows.append(row)
+        else:
+            unchecked.append(why)
+
     verdict = "FAIL" if any(r["status"] == _FAIL for r in rows) else "PASS"
     if not rows:
         verdict = "FAIL"
-        unchecked.append("nothing was compared — give at least one of bbox_mm / volume_mm3 / holes / cg_mm / bolt_circles / symmetric")
+        unchecked.append("nothing was compared — give at least one of bbox_mm / volume_mm3 / holes / cg_mm / bolt_circles / symmetric / profile / dimensions")
     return {"verdict": verdict, "rows": rows, "unchecked": unchecked}
 
 

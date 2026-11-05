@@ -25,6 +25,19 @@ _CSINK_SYM = r"[⌵]"
 _ESC = (("%%c", "Ø"), ("%%C", "Ø"), ("%%d", "°"), ("%%D", "°"), ("%%p", "±"), ("%%P", "±"), ("%%%", "%"))
 
 
+def _stack(m):
+    """An MTEXT stack `\\S<upper>^<lower>;` -> the tolerance as plain text. Upper only reads
+    one-sided (`+0.1/-0`), lower only likewise (`+0/-0.2`); a lone `+-` pair reads symmetric."""
+    up, lo = m.group(1).strip(), m.group(2).strip()
+    if up and lo:
+        return " %s/%s " % (up, lo)
+    if up:
+        return " %s " % up if up[0] == "\u00b1" else " %s/-0 " % up
+    if lo:
+        return " +0/%s " % (lo if lo[0] in "+-\u2212\u2013" else "-" + lo)
+    return " "
+
+
 def clean(raw):
     """MTEXT/TEXT as the drawing reads: formatting runs and braces removed, \\P -> space, %% codes decoded."""
     if not raw:
@@ -33,6 +46,7 @@ def clean(raw):
     for code, glyph in _ESC:
         t = t.replace(code, glyph)
     t = t.replace("\\P", " ").replace("\\~", " ").replace("\n", " ")
+    t = re.sub(r"\\S([^;^/#\\]*)\^([^;\\]*);", _stack, t)          # \S+0.1^-0.2;  stacked tolerance
     t = re.sub(r"\\[A-Za-z][^;\\]*;", "", t)          # \fArial|b0;  \H2.5;  \C1;  \A1;
     t = re.sub(r"\\[Uu]\+([0-9A-Fa-f]{4})", lambda m: chr(int(m.group(1), 16)), t)   # \U+2300
     t = t.replace("{", "").replace("}", "")
@@ -133,6 +147,9 @@ def parse_tolerance(raw):
     m = re.search(r"[-−–]\s*" + _NUM + r"\s*[/ ]\s*\+\s*" + _NUM, t)
     if m:
         return {"plus": _f(m.group(2)), "minus": _f(m.group(1))}
+    m = re.search(r"(?<![\d.,])0(?:[.,]0+)?\s*/\s*[-−–]\s*" + _NUM, t)   # '0/-0.2' (stacked, upper 0)
+    if m:
+        return {"plus": 0.0, "minus": _f(m.group(1))}
     m = re.search(r"\+\s*" + _NUM + r"\b(?!\s*[/ ]\s*[-−–])", t)       # '+0.2' alone: one-sided
     if m and not re.search(r"[-−–]\s*\d", t):
         return {"plus": _f(m.group(1)), "minus": 0.0}
@@ -144,6 +161,77 @@ def parse_tolerance(raw):
         a, b = _f(m.group(1)), _f(m.group(2))
         return {"limits": [min(a, b), max(a, b)]}
     return None
+
+
+_SCALE_KEYS = r"(?:SCALE|MA(?:\u00df|SS|SZ)STAB|\u00c9CHELLE|ECHELLE|ESCALA|SKALA)"
+_RATIO_RE = re.compile(r"(?<![\d.,])" + _NUM + r"\s*:\s*" + _NUM + r"(?![\d.,])")
+_KEYED_RE = re.compile(_SCALE_KEYS + r"\s*[:=.]?\s*" + _NUM + r"\s*[:/=]\s*" + _NUM + r"(?![\d.,])", re.I)
+_KEYED_M_RE = re.compile(r"(?<![A-Za-z0-9])M\s*[:=]?\s*" + _NUM + r"\s*:\s*" + _NUM + r"(?![\d.,])")
+_FRACTION_SCALE_RE = re.compile(r"(?<![\d.,/])" + _NUM + r"\s*/\s*" + _NUM + r"\s*(?:SCALE|SIZE)\b", re.I)
+_WORD_SCALES = ((re.compile(r"\bFULL\s+(?:SCALE|SIZE)\b", re.I), (1.0, 1.0)),
+                (re.compile(r"\bHALF\s+(?:SCALE|SIZE)\b", re.I), (1.0, 2.0)),
+                (re.compile(r"\bDOUBLE\s+(?:SCALE|SIZE)\b", re.I), (2.0, 1.0)))
+
+
+def parse_scale(raw, require_key=False):
+    """A drawing-scale statement -> (a, b) meaning `a : b` (paper : true; true = paper x b/a), or None.
+
+    Accepts `1:2`, `1 : 2`, `M 2:1`, `SCALE 1:2`, `SCALE 1/2`, `Massstab 1:5`, `1/2 SCALE`, `FULL SCALE`,
+    `HALF SCALE`, `DOUBLE SCALE`. A bare `a:b` is accepted only when `require_key` is False (a view
+    label / a title-block cell on its own); a slash fraction always needs a keyword, because `R1/2`
+    and `1/2 in` are not scales."""
+    t = clean(raw)
+    if not t:
+        return None
+    for rx in (_KEYED_RE, _KEYED_M_RE, _FRACTION_SCALE_RE):
+        m = rx.search(t)
+        if m:
+            a, b = _f(m.group(1)), _f(m.group(2))
+            if a > 0 and b > 0:
+                return a, b
+    for rx, ab in _WORD_SCALES:
+        if rx.search(t):
+            return ab
+    if not require_key:
+        m = _RATIO_RE.search(t)
+        if m:
+            a, b = _f(m.group(1)), _f(m.group(2))
+            if a > 0 and b > 0:
+                return a, b
+    return None
+
+
+_VIEW_LABEL_RE = re.compile(r"\b(?:DETAIL|SECTION|VIEW|ANSICHT|SCHNITT|EINZELHEIT|DETAIL[ -]?[A-Z])\b"
+                            r"|(?<![A-Za-z])[A-Z]\s*-\s*[A-Z](?![A-Za-z])", re.I)
+
+
+def is_view_label(raw):
+    """A caption of ONE view ('DETAIL B SCALE 2:1', 'SECTION A-A 1:1', 'ANSICHT C'), as opposed to the
+    sheet's own scale statement -- its ratio belongs to that view, never to the whole sheet."""
+    return bool(_VIEW_LABEL_RE.search(clean(raw)))
+
+
+_COUNT_RE = re.compile(r"^\s*(\d+)\s*[xX\u00d7]\s*(?=\S)")
+
+
+def split_count(raw):
+    """`4X \u00d88` -> (4, '\u00d88'); text without a count prefix -> (None, text as given). Used for DIMENSION
+    text, where a number after the `X` is the VALUE (`2X 25`), never a `4x5` size."""
+    t = clean(raw)
+    m = _COUNT_RE.match(t) if t else None
+    if m:
+        return int(m.group(1)), t[m.end():]
+    return None, raw
+
+
+def fcf_text(raw):
+    """A TOLERANCE (feature control frame) string -> readable text. The gdt-font symbol letters are
+    kept as `[gdt:j]` codes ON PURPOSE: a wrong letter -> symbol mapping would be a silent misread,
+    and the codes are stable. `|` separates the frame's compartments, `//` its rows."""
+    t = str(raw or "")
+    t = re.sub(r"\{?\\Fgdt;(\w)\}?", lambda m: "[gdt:%s]" % m.group(1), t)
+    t = t.replace("^J", " // ").replace("%%v", "|").replace("%%V", "|")
+    return clean(t)
 
 
 def detect_projection(texts):

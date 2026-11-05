@@ -68,23 +68,30 @@ namespace SolidworksExecution.Services
             if (features == null) return list;
             foreach (var o in features)
             {
-                var f = o as IFeature;
-                if (f == null) continue;
-                bool isWarning;
-                int code;
-                try { code = f.GetErrorCode2(out isWarning); }
-                catch { continue; }
-                if (code == 0) continue;
-                var e = new JObject();
-                e["feature"] = f.Name;
-                try { e["type"] = f.GetTypeName2(); } catch { }
-                e["code"] = code;
-                e["error"] = FeatureErrorNames.For(code);
-                e["warning"] = isWarning;
-                e["key"] = f.Name + "|" + code;
-                list.Add(e);
+                var e = ReadFeatureError(o as IFeature);
+                if (e != null) list.Add(e);
             }
             return list;
+        }
+
+        // The standalone per-feature read (also used by analyze_model overview, outside any mutating call):
+        // null when the feature is healthy or unreadable, else {feature,type,code,error,warning,key}.
+        private static JObject ReadFeatureError(IFeature f)
+        {
+            if (f == null) return null;
+            bool isWarning;
+            int code;
+            try { code = f.GetErrorCode2(out isWarning); }
+            catch { return null; }
+            if (code == 0) return null;
+            var e = new JObject();
+            e["feature"] = f.Name;
+            try { e["type"] = f.GetTypeName2(); } catch { }
+            e["code"] = code;
+            e["error"] = FeatureErrorNames.For(code);
+            e["warning"] = isWarning;
+            e["key"] = f.Name + "|" + code;
+            return e;
         }
 
         // ---- modal-dialog guard ----------------------------------------------------------------------------

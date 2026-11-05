@@ -143,6 +143,59 @@ def test_advisory_lists_models_and_errors():
     assert m.advisory({"sheet": {}}) == ""
 
 
+def _dup_extras(tol_a, tol_b, pos_a=None, pos_b=None):
+    """Two SolidWorks dimensions with the SAME value (0.008 m) but their own tolerance."""
+    dims = []
+    for name, tol, pos in (("D1@V", tol_a, pos_a), ("D2@V", tol_b, pos_b)):
+        d = {"name": name, "value_si": 0.008, "diametric": True}
+        if tol:
+            d["tol"] = tol
+        if pos:
+            d["pos"] = pos
+        dims.append(d)
+    return {"sheets": [{"name": "S1", "views": [{"name": "V", "dimensions": dims}]}], "errors": []}
+
+
+def _dup_art():
+    return {"sheet": {}, "dimensions": [
+        {"value": 8.0, "kind": "diameter", "defpts": [[10.0, 10.0]]},
+        {"value": 8.0, "kind": "diameter", "defpts": [[90.0, 40.0]]}]}
+
+
+def test_duplicate_values_with_the_same_tolerance_all_keep_it():
+    a = _dup_art()
+    tol = {"type": 2, "max_si": 0.0001, "min_si": -0.0001}
+    s = m.merge_extras(a, _dup_extras(tol, dict(tol)))
+    assert [d["sw_tol"]["max_mm"] for d in a["dimensions"]] == [0.1, 0.1]
+    assert all("sw_name" not in d for d in a["dimensions"]), "which SolidWorks dim it was is unknowable"
+    assert s["dimensions_matched"] == 2 and s["dimensions_ambiguous"] == 0
+
+
+def test_duplicate_values_with_different_tolerances_need_positions():
+    ta, tb = {"type": 2, "max_si": 0.0001, "min_si": -0.0001}, {"type": 2, "max_si": 0.0005, "min_si": 0.0}
+    a = _dup_art()
+    s = m.merge_extras(a, _dup_extras(ta, tb))
+    assert "sw_tol" not in a["dimensions"][0] and "sw_tol" not in a["dimensions"][1]     # no position: no guess
+    assert s["dimensions_ambiguous"] == 2
+
+    # positions given (metres): D1 near the first DXF dim, D2 near the second -> matched by position
+    b = _dup_art()
+    s = m.merge_extras(b, _dup_extras(ta, tb, pos_a=[0.011, 0.009], pos_b=[0.091, 0.041]))
+    assert b["dimensions"][0]["sw_tol"]["max_mm"] == 0.1 and b["dimensions"][0]["sw_name"] == "D1@V"
+    assert b["dimensions"][1]["sw_tol"]["max_mm"] == 0.5 and b["dimensions"][1]["sw_name"] == "D2@V"
+    assert s["dimensions_matched"] == 2
+
+    # the same positions listed in the OTHER order still match by position, not by list order
+    c = _dup_art()
+    m.merge_extras(c, _dup_extras(ta, tb, pos_a=[0.091, 0.041], pos_b=[0.011, 0.009]))
+    assert c["dimensions"][0]["sw_tol"]["max_mm"] == 0.5 and c["dimensions"][1]["sw_tol"]["max_mm"] == 0.1
+
+    # both SolidWorks dims equally near one DXF dim: no clear margin -> refuse
+    d = _dup_art()
+    s = m.merge_extras(d, _dup_extras(ta, tb, pos_a=[0.010, 0.010], pos_b=[0.010, 0.0101]))
+    assert "sw_tol" not in d["dimensions"][0] and s["dimensions_ambiguous"] == 2
+
+
 _TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
 
 if __name__ == "__main__":

@@ -12,7 +12,9 @@ from solidpilot.bridge import _call
 @mcp.tool(structured_output=False)
 def create_drawing(model_path: str = "") -> str:
     """Open a new SolidWorks drawing document (A3 sheet, 1:1 scale).
-    model_path: optional path to the part/assembly to reference. If omitted, an empty drawing is created.
+    model_path: optional path to a saved .sldprt/.sldasm. It is opened (silently) if not already open so
+        add_drawing_view can project it; the drawing stays the active document. If omitted, an empty
+        drawing is created. result_geometry echoes {model_path, model_opened}.
     Note: add_drawing_view requires the referenced part to be saved to disk."""
     return _call("create_drawing", {"model_path": model_path})
 
@@ -40,7 +42,8 @@ def add_drawing_view(
         DRAFTING-CONVENTION default: orthographic views (front/top/right/back/bottom/left) become HLV
         (hidden lines shown for reference — but never dimension to them), isometric keeps the document
         default. Section views (add_section_view) are separate and show the cut, not hidden lines.
-    Requires the part to be saved to disk (in-memory parts cannot be projected)."""
+    Requires the part to be saved to disk (in-memory parts cannot be projected). If the view is created
+    but its display_mode could not be applied, result_geometry.warning says so."""
     return _call(
         "add_drawing_view",
         {"view_type": view_type, "pos_x": pos_x, "pos_y": pos_y,
@@ -92,13 +95,17 @@ def add_flat_pattern_view(
 def add_drawing_dimension(
     px: float,
     py: float,
-    value: Annotated[float, Field(gt=0, description="Dimension value in METERS")],
+    value: Annotated[float, Field(gt=0, description="Dimension value in METERS (system units)")],
     label_offset_x: float = 0.0,
     label_offset_y: float = -0.015,
 ) -> str:
     """Add a smart dimension to a drawing view segment nearest to point (px, py).
     Works the same way as add_dimension but operates in a drawing document context.
     px/py should be on or very near the target segment in drawing sheet coordinates (meters).
+    value: the dimension value in METERS. It is read back after being set; drawing dimensions on projected
+    edges are usually driven (measured), so SolidWorks often refuses the override and the call returns
+    DIMENSION_VALUE_NOT_APPLIED (the dimension then exists at its measured value). Prefer
+    auto_dimension_drawing for model-driven values.
     Requires an active drawing document."""
     return _call(
         "add_drawing_dimension",
@@ -115,6 +122,7 @@ def auto_dimension_drawing(
     all_views: bool = True,
     include_unmarked: bool = False,
     eliminate_duplicates: bool = True,
+    view_name: str = "",
 ) -> str:
     """Transfer the MODEL's driving dimensions into the active drawing's views (SolidWorks 'Insert
     Model Items > Dimensions'). PREFER this over add_drawing_dimension's coordinate pick — the
@@ -122,7 +130,9 @@ def auto_dimension_drawing(
     create_drawing + add_drawing_view(s), then verify with analyze_slddrw_test (dimension_count > 0,
     values matching the model).
 
-    all_views: insert into all drawing views (True) or only the currently selected view (False). Default True.
+    all_views: insert into all drawing views (True) or only one view (False). Default True.
+    view_name: with all_views=False, the view to insert into (e.g. 'Drawing View1'); omitted = the active
+        view. It is selected for the call and the previously active view is re-activated afterwards.
     include_unmarked: also insert driving dimensions NOT marked for drawing (i.e. ALL driving dims), not just
         those flagged 'marked for drawing'. More complete but noisier. Default False — if a marked-only pass
         inserts 0 dimensions (the part's dims weren't marked for drawing), re-call with include_unmarked=True.
@@ -133,7 +143,7 @@ def auto_dimension_drawing(
     return _call(
         "auto_dimension_drawing",
         {"all_views": all_views, "include_unmarked": include_unmarked,
-            "eliminate_duplicates": eliminate_duplicates},
+            "eliminate_duplicates": eliminate_duplicates, "view_name": view_name},
     )
 
 
@@ -152,7 +162,9 @@ def auto_center_marks(
     auto_dimension_drawing, for a difficulty-2-grade drawing of a bracket/flange with holes.
 
     include_slots: also add slot center marks/centerlines for linear & arc slots (not just round holes). Default True.
-    extended_lines: draw the extended centerlines through each hole rather than a small cross. Default True.
+    extended_lines: extend lines from each center mark (IView.AutoInsertCenterMarks2 ExtendedLines) instead of a plain
+        mark. Default True. Mark size, gap and centerline font follow the document's Centerlines/Center Marks
+        settings; no connection lines are drawn between marks.
 
     Returns COMPLETED with result_geometry.center_marks (total marks placed across all views; 0 if the
     part has no holes/slots). Requires an active drawing with model views."""
@@ -192,6 +204,7 @@ def add_section_view(
     label: str = "A",
     flip: bool = False,
     scale: float = 0.0,
+    view_name: str = "",
 ) -> str:
     """Create a SECTION VIEW that cuts the model so internal/blind features become visible, dimensionable
     edges. Use this when a feature's size can't be shown in a projected view — most importantly a BLIND
@@ -208,6 +221,8 @@ def add_section_view(
     px,py: where to place the section view (meters) — also picks which side the section projects toward.
     label: section label (default 'A' → 'SECTION A-A'). flip: reverse the cut/viewing direction.
     scale: optional section view scale; inherits the parent view's scale if 0/omitted.
+    view_name: the parent model view to cut (e.g. 'Drawing View1'); omitted = the view whose outline contains
+        the cut point.
 
     After the section lands, call auto_dimension_drawing or add_drawing_dimension to dimension the
     now-visible depth. Requires an active drawing with a parent model view. If it
@@ -220,4 +235,6 @@ def add_section_view(
             params[k] = v
     if scale and scale > 0:
         params["scale"] = scale
+    if view_name:
+        params["view_name"] = view_name
     return _call("add_section_view", params)

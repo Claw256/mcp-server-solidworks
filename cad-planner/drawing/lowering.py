@@ -266,9 +266,9 @@ def _resolve_thickness(art, flat_view, views, cfg):
             found.append((short, "thickness view %s (%g x %g)" % (vid, v["size"][0], v["size"][1])))
     import re as _re
     for n in art.get("notes", []):
-        m = _re.match(r"^([0-9]+(?:\.[0-9]+)?)\s*mm$", n["text"], _re.I)
+        m = _re.match(r"^([0-9]+(?:[.,][0-9]+)?)\s*mm$", n["text"], _re.I)   # '1,5 mm' too
         if m:
-            found.append((float(m.group(1)), "note %r" % n["text"]))
+            found.append((float(m.group(1).replace(",", ".")), "note %r" % n["text"]))
     if not found:
         return {"state": "thickness_unresolved",
                 "detail": "no thickness view and no `N mm` note"}

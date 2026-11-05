@@ -56,6 +56,10 @@
     "retryable": false,
     "hint": "No dimension has that name; analyze_model('features') lists driving dimensions."
   },
+  "DIMENSION_VALUE_NOT_APPLIED": {
+    "retryable": false,
+    "hint": "The dimension was added but SolidWorks would not set its value (drawing dimensions on projected edges are usually driven); it now exists at the measured value. Use auto_dimension_drawing for model-driven values."
+  },
   "DIRECTION_NOT_FOUND": {
     "retryable": false,
     "hint": "The direction reference could not be resolved."
@@ -83,6 +87,10 @@
   "EXPORT_FAILED": {
     "retryable": false,
     "hint": "The export failed; check the format and that the target folder is writable and the file is not open elsewhere."
+  },
+  "EXPORT_FILE_MISSING": {
+    "retryable": false,
+    "hint": "SaveAs3 reported success but no new non-empty file exists at the path; check the folder is writable and the file is not locked, then export again."
   },
   "EXTRUSION_FAILED": {
     "retryable": false,
@@ -123,6 +131,10 @@
   "INSERT_FAILED": {
     "retryable": false,
     "hint": "The component could not be inserted; check the file path and that it is a part/assembly."
+  },
+  "INTERFERENCE_FAILED": {
+    "retryable": false,
+    "hint": "SolidWorks could not run interference detection (no manager returned); check the assembly is open and fully loaded, then retry analyze_assembly(interference)."
   },
   "INVALID_PARAMETER": {
     "retryable": false,

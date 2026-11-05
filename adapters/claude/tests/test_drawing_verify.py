@@ -157,3 +157,47 @@ if __name__ == "__main__":
             print("FAIL -", t.__name__, "::", type(ex).__name__, ex)
     print("\n%d/%d passed" % (len(_TESTS) - failed, len(_TESTS)))
     sys.exit(1 if failed else 0)
+
+
+def test_profile_rows_pass_fail_and_not_checked():
+    prof = [{"view": "front", "min_iou": 0.97, "iou": 0.981, "model_only_pct": 1.0, "ref_only_pct": 0.9, "regions": 0},
+            {"view": "top", "min_iou": 0.97, "iou": 0.90, "model_only_pct": 6.0, "ref_only_pct": 4.0, "regions": 2},
+            {"view": "right", "error": "REGISTRATION_WEAK: proportions disagree"}]
+    res = dv.evaluate({"profile": [{}, {}, {}]}, {"profiles": prof})
+    assert _status(res, "profile front") == "PASS" and _status(res, "profile top") == "FAIL"
+    assert res["verdict"] == "FAIL"
+    assert any("profile right" in u and "REGISTRATION_WEAK" in u for u in res["unchecked"])
+    assert "not a dimension" in next(r["detail"] for r in res["rows"] if r["item"] == "profile front")
+
+
+def test_dimension_rows_use_value_tolerance_and_report_unmeasured_as_not_checked():
+    def spec(**kw):
+        return dict({"name": "h", "a": {"face": 1}, "b": {"face": 2}, "kind": "distance", "value_mm": 25}, **kw)
+    ok = dv.evaluate({"dimensions": []}, {"dimensions": [{"spec": spec(), "got": {"distance_mm": 25.05}}]})
+    assert _status(ok, "dimension h") == "PASS"
+    bad = dv.evaluate({}, {"dimensions": [{"spec": spec(tol_mm=0.01), "got": {"distance_mm": 25.05}}]})
+    assert _status(bad, "dimension h") == "FAIL" and "delta 0.05" in bad["rows"][0]["detail"]
+    ang = dv.evaluate({}, {"dimensions": [{"spec": {"name": "a", "kind": "angle", "a": {"face": 1}, "b": {"face": 2},
+                                                    "value_deg": 90}, "got": {"angle_deg": 90.2}}]})
+    assert _status(ang, "dimension a") == "PASS"
+    miss = dv.evaluate({}, {"dimensions": [{"spec": spec(), "error": "UNKNOWN_ANALYSIS: measure"},
+                                           {"spec": spec(name="g"), "got": {"angle_deg": 3}}]})
+    assert miss["rows"] == [] and "UNKNOWN_ANALYSIS" in miss["unchecked"][0] and "returned no distance_mm" in miss["unchecked"][1]
+
+
+def test_measure_request_builds_the_contract_name_and_rejects_malformed_entries():
+    import json
+    import pytest
+    req = dv.measure_request({"name": "n", "a": {"face": 3}, "b": {"point": [0, 0.01, 0]}, "kind": "distance", "value_mm": 5})
+    assert json.loads(req) == {"a": {"face": 3}, "b": {"point": [0.0, 0.01, 0.0]}, "kind": "distance"}
+    one = json.loads(dv.measure_request({"a": {"edge": 4}, "kind": "diameter", "value_mm": 8}))
+    assert one == {"a": {"edge": 4}, "kind": "diameter"}                   # b omitted for radius/diameter/length
+    for bad in ({"a": {"face": 1}, "b": {"face": 2}, "kind": "distance"},                    # no value
+                {"a": {"face": 1}, "b": {"face": 2}, "kind": "distance", "value_mm": "25"},  # not a number
+                {"a": {"face": 1}, "kind": "distance", "value_mm": 5},                       # b missing
+                {"a": {"face": 1, "edge": 2}, "kind": "radius", "value_mm": 5},
+                {"a": {"point": [1, 2]}, "kind": "radius", "value_mm": 5},
+                {"a": {"face": 1}, "b": {"face": 2}, "kind": "volume", "value_mm": 5},
+                {"a": {"face": 1}, "b": {"face": 2}, "kind": "angle", "value_mm": 5}):
+        with pytest.raises(ValueError):
+            dv.measure_request(bad)

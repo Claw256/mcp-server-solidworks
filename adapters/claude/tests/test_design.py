@@ -314,3 +314,75 @@ def test_invalid_initial_graph_opens_no_document():
         out = tools.design_new(graph=json.dumps({"units": "meters", "nodes": [{"id": "x", "type": "nope"}]}))
         assert out.startswith("FAILED | VALIDATION_FAILED") and env.raw_calls == []
         assert tools.design_new(graph="{").startswith("FAILED | INVALID_JSON")
+
+
+def test_verification_records_live_on_their_step_and_survive_undo_redo_and_restart():
+    if not _DEPS:
+        return
+    with Env() as env:
+        _new(env, box("b1"))
+        d = design.get()
+        design.record_verification(d, {"tool": "compare_to_reference", "view": "front", "iou": 0.90, "regions": 2,
+                                       "verdict": "differs"})
+        _step([{"op": "add", "nodes": [box("b2")]}], "two")
+        assert "verification" not in d.live()                              # a new step starts unchecked
+        design.record_verification(d, {"tool": "compare_to_reference", "view": "front", "iou": 0.97, "regions": 0,
+                                       "verdict": "close"})
+        tools.design_undo()
+        assert d.live()["verification"][0]["iou"] == 0.90 and len(d.live()["verification"]) == 1
+        tools.design_redo()
+        assert d.live()["verification"][0]["iou"] == 0.97
+        design._reset_memory()                                              # process restart: journal on disk
+        again = design.get()
+        assert [r["iou"] for r in again.snapshots[1]["verification"]] == [0.90]
+        assert [r["iou"] for r in again.snapshots[2]["verification"]] == [0.97]
+
+
+def test_history_shows_the_score_per_step_and_the_trend_and_advises_undo_when_worse():
+    if not _DEPS:
+        return
+    with Env() as env:
+        _new(env, box("b1"))
+        d = design.get()
+
+        def rec(iou):
+            design.record_verification(d, {"tool": "compare_to_reference", "view": "front", "iou": iou})
+        rec(0.90)
+        _step([{"op": "set", "id": "b1", "params": {"height": 0.06}}], "taller")
+        rec(0.96)
+        h = tools.design_history()
+        assert "checked: front IoU 0.960  [improved vs step 1: IoU +0.060]" in h and "WORSE" not in h
+        _step([{"op": "set", "id": "b1", "params": {"height": 0.071}}], "tweak")
+        rec(0.9605)
+        h = tools.design_history()
+        assert "[same vs step 2" in h and "WORSE" not in h
+        _step([{"op": "set", "id": "b1", "params": {"height": 0.2}}], "bad")
+        rec(0.80)
+        h = tools.design_history()
+        assert "[worse vs step 3" in h and "WORSE than step 3: design_undo back to it" in h
+
+
+def test_trend_falls_back_to_fail_rows_and_ignores_unrelated_views():
+    if not _DEPS:
+        return
+    a = design.verification_score({"verification": [{"tool": "verify_against_interpretation", "failed": 3,
+                                                    "ious": {"front": 0.9}}]})
+    b = design.verification_score({"verification": [{"tool": "verify_against_interpretation", "failed": 1,
+                                                    "ious": {"top": 0.9}}]})
+    assert design.verification_trend(b, a) == ("improved", "FAIL rows -2")      # no common view: FAIL count decides
+    assert design.verification_score({}) == {} and design.verification_trend({}, {}) == (None, "")
+
+
+def test_record_verification_tolerates_no_design_and_keeps_the_record_json_safe_and_bounded():
+    if not _DEPS:
+        return
+    assert design.record_verification(None, {"iou": 1.0}) is None
+    with Env() as env:
+        _new(env, box("b1"))
+        d = design.get()
+        assert design.record_verification(d, "nope") is None
+        rec = design.record_verification(d, {"tool": "t", "odd": {1, 2}})
+        assert rec is not None and isinstance(rec["odd"], str)             # default=str keeps it JSON-safe
+        for i in range(30):
+            design.record_verification(d, {"tool": "t", "i": i})
+        assert len(d.live()["verification"]) == 20 and d.live()["verification"][-1]["i"] == 29

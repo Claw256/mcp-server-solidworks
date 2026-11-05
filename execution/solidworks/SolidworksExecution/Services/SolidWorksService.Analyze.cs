@@ -45,26 +45,26 @@ namespace SolidworksExecution.Services
 
                 if (analysisType == "mass_properties")
                 {
-                    // IModelDoc2.GetMassProperties2 returns double[]:
-                    // [0]=CG.x, [1]=CG.y, [2]=CG.z, [3]=volume, [4]=surface_area, [5]=mass, [6+]=moments.
-                    // (Verified empirically against a 50mm cube: [0.025,0.025,0.025,0.000125,0.015,...].)
-                    int massStatus = 0;
-                    object rawProps = modelDoc.GetMassProperties2(ref massStatus);
-                    double[] props = rawProps as double[];
-                    if (props == null && rawProps is object[] objArr)
-                        props = System.Array.ConvertAll(objArr, o => (double)o);
-
-                    if (props == null || props.Length < 5)
+                    // IMassProperty2 (CreateMassProperty2) when it can be built, else the legacy GetMassProperties2
+                    // array ([0..2]=CG, [3]=volume, [4]=area; verified against a 50mm cube). volume/surface_area/cx/cy/cz
+                    // keep their keys (drawing_verify parses them); mass/density/pmoi_1..3 are added only from IMassProperty2.
+                    var mass = ReadMassProps(modelDoc);
+                    if (mass == null)
                         return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
                             "ANALYSIS_FAILED",
-                            "GetMassProperties2 returned null or insufficient data. Ensure the document has at least one solid body.");
+                            "Mass properties returned null or insufficient data. Ensure the document has at least one solid body.");
 
-                    // GetMassProperties2 layout: [0]=cx, [1]=cy, [2]=cz, [3]=volume, [4]=surface_area
-                    results.Add($"volume={props[3]:G6}");
-                    results.Add($"surface_area={props[4]:G6}");
-                    results.Add($"cx={props[0]:G6}");
-                    results.Add($"cy={props[1]:G6}");
-                    results.Add($"cz={props[2]:G6}");
+                    results.Add($"volume={mass.Value<double>("volume"):G6}");
+                    results.Add($"surface_area={mass.Value<double>("surface_area"):G6}");
+                    results.Add($"cx={mass.Value<double>("cx"):G6}");
+                    results.Add($"cy={mass.Value<double>("cy"):G6}");
+                    results.Add($"cz={mass.Value<double>("cz"):G6}");
+                    if (mass["mass"] != null) results.Add($"mass={mass.Value<double>("mass"):G6}");
+                    if (mass["density"] != null) results.Add($"density={mass.Value<double>("density"):G6}");
+                    var pmoi = mass["pmoi"] as JArray;
+                    if (pmoi != null)
+                        for (int pi = 0; pi < pmoi.Count; pi++)
+                            results.Add($"pmoi_{pi + 1}={pmoi[pi].Value<double>():G6}");
                 }
                 else if (analysisType == "geometry")
                 {
@@ -104,39 +104,10 @@ namespace SolidworksExecution.Services
                     if (partDoc == null)
                         return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
                             "WRONG_DOCUMENT_TYPE", "analysis_type='bbox' requires a part document.");
-                    object[] bodies = partDoc.GetBodies2((int)swBodyType_e.swSolidBody, true) as object[];
-                    if (bodies == null || bodies.Length == 0)
+                    var bb = ReadBBox(partDoc);
+                    if (bb == null)
                         return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
-                            "ANALYSIS_FAILED", "analysis_type='bbox': the part has no solid body.");
-                    double[] lo = { double.MaxValue, double.MaxValue, double.MaxValue };
-                    double[] hi = { double.MinValue, double.MinValue, double.MinValue };
-                    double[][] dirs = { new[] { 1.0, 0, 0 }, new[] { 0, 1.0, 0 }, new[] { 0, 0, 1.0 } };
-                    foreach (var b in bodies)
-                    {
-                        var body = b as IBody2;
-                        if (body == null) continue;
-                        for (int ax = 0; ax < 3; ax++)
-                        {
-                            foreach (double sign in new[] { 1.0, -1.0 })
-                            {
-                                double ox, oy, oz;
-                                if (!body.GetExtremePoint(dirs[ax][0] * sign, dirs[ax][1] * sign,
-                                                          dirs[ax][2] * sign, out ox, out oy, out oz))
-                                    continue;
-                                double v = ax == 0 ? ox : (ax == 1 ? oy : oz);
-                                if (v < lo[ax]) lo[ax] = v;
-                                if (v > hi[ax]) hi[ax] = v;
-                            }
-                        }
-                    }
-                    if (lo[0] == double.MaxValue)
-                        return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
-                            "ANALYSIS_FAILED", "GetExtremePoint found no extent on any body.");
-                    var bb = new JObject();
-                    bb["min"] = new JArray(Math.Round(lo[0], 6), Math.Round(lo[1], 6), Math.Round(lo[2], 6));
-                    bb["max"] = new JArray(Math.Round(hi[0], 6), Math.Round(hi[1], 6), Math.Round(hi[2], 6));
-                    bb["size"] = new JArray(Math.Round(hi[0] - lo[0], 6), Math.Round(hi[1] - lo[1], 6),
-                                            Math.Round(hi[2] - lo[2], 6));
+                            "ANALYSIS_FAILED", "analysis_type='bbox': the part has no solid body (GetExtremePoint found no extent).");
                     results.Add(bb.ToString(Newtonsoft.Json.Formatting.None));
                 }
                 else if (analysisType == "bodies")
@@ -276,7 +247,11 @@ namespace SolidworksExecution.Services
 
                     var sObj = new JObject();
                     sObj["name"] = sketchFeat.Name;
-                    sObj["sketch"] = ReadSketch(theSketch, true); // FULL geometry, rounded
+                    var segStatus = new List<int>();
+                    var sketchJson = ReadSketch(theSketch, true, segStatus); // FULL geometry, rounded
+                    sObj["sketch"] = sketchJson;
+                    // Solve health: status, the segments that are not fully defined, relations (+ over-defining ones).
+                    sObj["health"] = ReadSketchHealth(theSketch, sketchJson["segments"] as JArray, segStatus);
                     var pl = ReadSketchPlane(theSketch);
                     if (pl != null) sObj["plane"] = pl;
                     results.Add(sObj.ToString(Newtonsoft.Json.Formatting.None));
@@ -305,11 +280,34 @@ namespace SolidworksExecution.Services
                             errCode ?? "FEATURE_MAP_FAILED", errMsg ?? "feature_map failed.");
                     results.Add(mapResult.ToString(Newtonsoft.Json.Formatting.None));
                 }
+                else if (analysisType == "overview")
+                {
+                    // ONE read of how the part is modelled: tree + rebuild errors + driving dims + equations + bbox +
+                    // mass + configurations + custom properties + rollback state. Read-only (never moves the bar).
+                    var partDoc = modelDoc as IPartDoc;
+                    if (partDoc == null)
+                        return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
+                            "WRONG_DOCUMENT_TYPE", "analysis_type='overview' requires a part document.");
+                    results.Add(BuildOverview(modelDoc, partDoc).ToString(Newtonsoft.Json.Formatting.None));
+                }
+                else if (analysisType == "measure")
+                {
+                    var partDoc = modelDoc as IPartDoc;
+                    if (partDoc == null)
+                        return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
+                            "WRONG_DOCUMENT_TYPE", "analysis_type='measure' requires a part document.");
+                    string mErrCode, mErrMsg;
+                    JObject measured = MeasureEntities(modelDoc, partDoc, p?.Value<string>("name"), out mErrCode, out mErrMsg);
+                    if (measured == null)
+                        return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
+                            mErrCode ?? "ANALYSIS_FAILED", mErrMsg ?? "measure failed.");
+                    results.Add(measured.ToString(Newtonsoft.Json.Formatting.None));
+                }
                 else
                 {
                     return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
                         "UNSUPPORTED_ANALYSIS_TYPE",
-                        $"analysis_type '{analysisType}' is not supported. Supported: mass_properties, geometry, bodies, edges, faces, features, sketch, feature_map.");
+                        $"analysis_type '{analysisType}' is not supported. Supported: mass_properties, geometry, bbox, bodies, edges, faces, features, sketch, feature_map, overview, measure.");
                 }
 
                 // AnalyzeModel does NOT increment state_version — read-only, same pattern as VerifyState
@@ -323,7 +321,7 @@ namespace SolidworksExecution.Services
                     {
                         StateVersion = _guard.GetCurrentStateVersion(),
                         ActiveDocument = modelDoc.GetTitle(),
-                        DocumentType = "PART",
+                        DocumentType = DocTypeNameOf(modelDoc),
                         ActiveSketch = null,
                         Features = results,
                         Dimensions = new List<string>()
@@ -595,6 +593,8 @@ namespace SolidworksExecution.Services
             if (sketch != null)
             {
                 var sk = ReadSketch(sketch, fullSketch);
+                // Solve status as a string only (the summary stays compact; relations/segments: analysis_type='sketch').
+                try { sk["status"] = ConstrainedStatusName(sketch.GetConstrainedStatus()); } catch { }
                 // Skip empty sketches (e.g. the Origin's degenerate sketch emitted "counts":{} noise).
                 var counts = sk["counts"] as JObject;
                 bool hasContent = (counts != null && counts.Count > 0)
@@ -619,9 +619,16 @@ namespace SolidworksExecution.Services
             else if (type == "MirrorPattern")
                 TryReadMirror(feat, modelDoc, fj);
 
+            else
+                TryReadDefinition(feat, type, modelDoc, fj);   // revolve / fillet / chamfer / hole wizard / loft / sweep
+
             // Extrude/cut end-condition + depth (blind) + reverse flag, so a rebuild knows HOW it was made.
             var ex = ReadExtrude(feat);
-            if (ex != null) fj["extrude"] = ex;
+            if (ex != null)
+            {
+                TryReadExtrudeExtras(feat, modelDoc, ex);      // draft, thin, direction 2, start condition, merge, up-to
+                fj["extrude"] = ex;
+            }
 
             return fj;
         }
@@ -1034,7 +1041,9 @@ namespace SolidworksExecution.Services
         //   profile is a single full circle (the common bore/boss case — fully defined, lossless, tiny).
         //   No per-segment coordinate dump.
         // full=true (the 'sketch' detail mode): every segment's geometry (rounded), for an exact rebuild.
-        private JObject ReadSketch(ISketch sketch, bool full)
+        // segStatus (optional, detail mode): filled PARALLEL to the emitted `segments` array with each segment's
+        // swConstrainedStatus_e (ISketchSegment.Status).
+        private JObject ReadSketch(ISketch sketch, bool full, List<int> segStatus = null)
         {
             var sj = new JObject();
             var segArr = new JArray();
@@ -1050,6 +1059,12 @@ namespace SolidworksExecution.Services
                     if (seg == null) continue;
                     var ej = ReadSegment(seg);
                     if (ej == null) continue;
+                    if (full && segStatus != null)
+                    {
+                        int st = 1;
+                        try { st = seg.Status; } catch { }
+                        segStatus.Add(st);
+                    }
                     if (ej.Value<bool?>("construction") == true) construction++;
                     else { realCount++; lastReal = ej; }
                     switch (ej.Value<string>("kind"))

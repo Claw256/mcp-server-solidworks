@@ -96,7 +96,8 @@ def design_redo(steps: int = 1) -> str:
 @mcp.tool(structured_output=False)
 def design_history(design_id: str = "") -> str:
     """List a design's steps (label, what each changed), the head marker, steps available to redo and the
-    current node ids/types. Read-only. design_id '' = the current design (also survives a restart; pass an
+    current node ids/types. Each step shows its latest compare/verify score (IoU, FAIL rows) with a trend vs
+    the previous checked step (improved/worse/same): if worse, design_undo. Read-only. design_id '' = the current design (also survives a restart; pass an
     id to inspect an older one)."""
     d, err = _need(design_id)
     return err or core.history_text(d)
