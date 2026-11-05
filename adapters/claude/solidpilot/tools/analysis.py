@@ -3,6 +3,8 @@ import hashlib
 import json
 import os
 from typing import Literal
+from execution_client import ExecutionLayerError
+from response_mapper import CadOperationError, map_response
 from solidpilot import bridge
 from solidpilot.app import mcp
 from solidpilot.bridge import _call
@@ -14,7 +16,7 @@ from solidpilot.payloads import _analysis_items, _kv_dict
 # ---------------------------------------------------------------------------
 @mcp.tool(structured_output=False)
 def analyze_model(
-    analysis_type: Literal["mass_properties", "geometry", "bbox", "bodies", "edges", "faces", "features", "sketch", "feature_map"],
+    analysis_type: Literal["mass_properties", "geometry", "bbox", "bodies", "edges", "faces", "features", "sketch", "feature_map", "overview", "measure"],
     name: str = "",
     from_feature: str = "",
     to_feature: str = "",
@@ -22,68 +24,85 @@ def analyze_model(
     k: int = 0,
     axis: str = "",
 ) -> str:
-    """Analyze the active SolidWorks part document (read-only, does NOT change state).
-    analysis_type='mass_properties': returns volume, surface_area, center of gravity (cx, cy, cz) in document units.
-    analysis_type='geometry': returns bodies, faces, edges, vertices counts of all solid bodies.
-    analysis_type='bbox': EXACT axis-aligned extents of all solid bodies, JSON {min,max,size} in meters (model axes).
-        Use it to check overall dimensions against a drawing. Cylindrical faces in 'faces' also carry hole (true =
-        concave, a hole not a boss), u_span (rad; ~6.283 = full circle) and v_span (length along the axis).
-    analysis_type='bodies': PER-BODY fingerprints for multibody parts (e.g. a flattened assembly
-        STEP import): volume, area, centroid, edge/vertex counts, and the body's face-index RANGE
-        in the same enumeration 'faces' walks — segment the faces list per body with it.
-    analysis_type='edges': returns a JSON object listing EVERY solid edge with its start/end/MIDPOINT 3D coords
-        in meters (rounded to 6 decimals; closed/circular edges also report length) and a stable index `i`. Use
-        the index `i` for add_edge_feature(edge_indices=...) — robust for crowded/concave edges — or a MIDPOINT
-        for coordinate-based selection (e.g. edge_flange's ex/ey/ez). On a very large part (many hundreds of edges)
-        this is the slowest mode; prefer 'features' for a general understanding. TARGETED (recommended when you
-        already know roughly WHERE): pass near='[x,y,z]' (+ optional k, axis) to get only the k nearest edges to
-        a point instead of the full dump — see near/k/axis below.
-    analysis_type='faces': returns a JSON object listing EVERY solid face with a stable index `i`; planar faces
-        also carry normal, area, and a representative on-plane point (meters, rounded to 6 decimals). Use the
-        index `i` for create_sketch(on_face=True, face_index=i) — robust where a coordinate pick is ambiguous
-        (e.g. a revolve end-cap / shaft end whose centre lies on the axis). TARGETED: pass near='[x,y,z]'
-        (+ optional k, axis) for only the k nearest faces to a point — see near/k/axis below.
-    analysis_type='features': the part's COMPACT RECIPE — this is the default "understand the part" read. Returns
-        the ordered feature tree (name/type; suppressed shown only when true), each feature's driving dimensions
-        (deduped, SI meters/radians, rounded to 6 decimals), a per-sketch SUMMARY (segment counts + an inline
-        {cx,cy,r} for single-full-circle profiles), pattern semantics (instances / spacing_deg / distinct_instances
-        / wraps), and equations / globals. Each sketch reports its plane as {ref, offset} where ref is the
-        canonical English default plane ('Front Plane'/'Top Plane'/'Right Plane') and offset is the signed
-        distance along its normal (offset 0 = that default plane itself; offset != 0 = a parallel face/plane
-        at that height — sketch on the face there). Each extrude/cut reports extrude:{end (blind/through_all/
-        ...), depth (blind only), reversed (present only when the direction is flipped)} so you know HOW it
-        was built; for direction use the sketch's plane.offset (offset != 0 ⇒ a face, so a cut goes into the
-        part). Features are listed in tree (history) ORDER — reproduce them in that exact order (order
-        matters wherever features overlap). It does NOT dump every sketch segment's coordinates — that keeps the payload small
-        and is enough to understand the part and build dimension/pattern variants. Use this first.
-    analysis_type='sketch' (requires name=...): ONE sketch's FULL geometry — every segment's coordinates (rounded
-        to 6 decimals) plus its plane. Use this only when you actually need exact sketch geometry (e.g. to reproduce
-        an irregular profile); get the sketch name from the 'features' read first. name = the sketch feature name,
-        e.g. 'Sketch2'.
-    analysis_type='feature_map': per-feature geometry ATTRIBUTION — deterministically answers "which edges/faces
-        did each feature act on?" (e.g. WHICH edge a fillet/chamfer was applied to — never guess an anchor). Walks
-        the tree base→end with the rollback bar and diffs the topology between stops INSIDE the tool; returns one
-        compact JSON {feature_count, map:[{feature, type, delta:{faces,edges,vertices}, consumed_edges:[{mid,len}],
-        created_faces:[{point, normal?, planar, area}]}]} (6-decimal meters). consumed_edges = edges that existed
-        BEFORE the feature and were consumed by it (both endpoints gone; merely trimmed neighbours excluded) — use
-        a consumed edge's `mid` as the fillet/chamfer anchor `near` point (it references the PRE-feature geometry,
-        exactly what the IR anchor needs). created_faces = genuinely new surfaces (trimmed existing planes excluded).
-        Sketches/planes are listed without a delta; suppressed features are skipped. Optional from_feature/to_feature
-        (tree names) limit the walk to a range. NON-DESTRUCTIVE: the rollback bar is restored to the end, nothing is
-        saved — but it does rebuild the model feature-by-feature, so it is the slowest mode on big trees.
-
-    near / k / axis (edges and faces modes ONLY — a TARGETED read instead of the full dump): when you already
-        know approximately where the geometry is (the common build-time case — you almost always do), pass
-        near='[x,y,z]' (a JSON string, meters) to return only the nearest entities to that point, each annotated
-        with `dist` (meters) and still carrying its STABLE full-enumeration index `i` (so selection is unchanged).
-        k (default 0 = no cap): keep only the k nearest. axis='[x,y,z]' (optional JSON string): keep only entities
-        whose direction is ~parallel to axis — for faces that's the planar-face NORMAL (e.g. axis='[0,0,1]' → only
-        faces on +Z planes), for edges the chord direction. The response adds total_edge_count/total_face_count so
-        you know how many were filtered out. Omitting near preserves the exact historical full-dump behavior.
+    """Analyze the active SolidWorks part (read-only, does NOT change state). Lengths are meters, angles radians
+    (6-decimal rounding) unless a key says mm/deg.
+    'overview': ONE read of how the part is modelled: ordered feature tree (type, suppressed, per-feature rebuild
+        error/warning, driving dimensions), rollback_at_end, equations, bodies, bbox, mass (volume, area, CG, mass,
+        density, principal moments), configs {names, active} + per-feature suppressed_in, file custom_properties,
+        and `design` (node id -> feature names) when a design session exists. Start here.
+    'mass_properties': volume, surface_area, cx/cy/cz, mass, density, pmoi_1..3 as key=value.
+    'geometry': body/face/edge/vertex counts.  'bbox': exact {min,max,size} of all solid bodies.
+    'bodies': per-body volume/area/centroid + its face-index range in 'faces' (multibody / flattened STEP).
+    'edges' / 'faces': every solid edge (start/end/mid) or face (area; planar normal + point; cylinders kind/
+        origin/axis/radius, hole = concave, u_span ~6.283 = full circle, v_span) with a stable index `i`: use it for
+        add_edge_feature(edge_indices=...) and create_sketch(on_face, face_index=...). Slow on huge parts; prefer
+        near/k/axis (below).
+    'features': the compact recipe: ordered tree, driving dimensions, per-sketch summary (segment counts, inline
+        circle, solve `status`, plane {ref, offset}), patterns (instances/spacing_deg/distinct_instances/wraps),
+        equations. Feature definitions where readable: extrude {end, depth, reversed, draft_deg, direction2, thin,
+        start, up_to, merge}, revolve, fillet/chamfer {radius|distance, edges}, hole_wizard, loft, sweep.
+        Order matters: reproduce features in that order. No per-segment coordinates.
+    'sketch' (name=sketch name): full segment coordinates + plane + `health`: status (under_defined/fully_defined/
+        over_defined/no_solution/...), segment_status (indices into segments that are not fully defined), relations
+        [{type, entities:[{seg: i} | {point}]}], over_defining.
+    'feature_map': which edges/faces each feature acted on: {map:[{feature, type, delta, consumed_edges:[{mid,len}],
+        created_faces}]}. A consumed edge's `mid` is the fillet/chamfer anchor for `near`. Rolls the bar feature by
+        feature and restores it (slowest mode); from_feature/to_feature limit the range.
+    'measure' (name=JSON): {"a": E, "b": E, "kind": "distance|angle|radius|diameter|length|area"}, E = {"face": i} |
+        {"edge": i} | {"point": [x,y,z] meters} (indices from 'faces'/'edges'); b optional for radius/diameter/
+        length/area; points support distance only. Returns one JSON object with just distance_mm | angle_deg |
+        radius_mm | diameter_mm | length_mm | area_mm2. Arcs/cylinders measure centre to centre. Use it to check a
+        drawing dimension.
+    near / k / axis (edges, faces only): near='[x,y,z]' returns only the entities nearest that point (each with
+        `dist`, same stable `i`); k caps how many (0 = all); axis='[x,y,z]' keeps entities parallel to it (faces:
+        planar normal, edges: chord). Responses add total_edge_count/total_face_count.
     """
+    if analysis_type == "overview":
+        return _overview()
     return _call("analyze_model", {"analysis_type": analysis_type, "name": name,
                                    "from_feature": from_feature, "to_feature": to_feature,
                                    "near": near, "k": k, "axis": axis})
+
+
+def _same_document(design_title, active) -> bool:
+    """A design only describes THIS part when its document title matches (extension and case ignored)."""
+    norm = lambda t: os.path.splitext(str(t or ""))[0].strip().lower()
+    return bool(design_title) and bool(active) and norm(design_title) == norm(active)
+
+
+def _design_map(active_document) -> dict | None:
+    """node id -> feature names of the live design snapshot, or None when there is no design for this part.
+    Tolerant by construction: the overview must never fail because a design record is missing or odd."""
+    try:
+        from solidpilot import design
+        d = design.get()
+        if d is None or not _same_document(getattr(d, "doc_title", ""), active_document):
+            return None
+        nodes = d.live().get("node_features") or {}
+        return {"design_id": d.design_id, "step": d.head, "node_features": dict(nodes)} if nodes else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _overview() -> str:
+    """analyze_model('overview'): the C# digest plus the adapter-side design-session map."""
+    try:
+        response = bridge._call_raw("analyze_model", {"analysis_type": "overview", "name": "",
+                                                      "from_feature": "", "to_feature": "",
+                                                      "near": "", "k": 0, "axis": ""})
+    except ExecutionLayerError as ex:
+        raise CadOperationError(f"Execution layer unavailable | {ex}") from ex
+    items = (response.get("cadState") or {}).get("features") if response.get("status") == "COMPLETED" else None
+    if items:
+        try:
+            digest = json.loads(items[0])
+            dm = _design_map((response.get("cadState") or {}).get("activeDocument"))
+            if dm is not None:
+                digest["design"] = dm
+                response["cadState"]["features"] = [json.dumps(digest, separators=(",", ":"))] + list(items[1:])
+        except (ValueError, TypeError):
+            pass
+    return map_response(response)
 
 
 # ---------------------------------------------------------------------------

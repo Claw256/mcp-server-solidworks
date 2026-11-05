@@ -222,6 +222,7 @@ namespace SolidworksExecution.Services
             var arr = new JArray();
             int idx = 0;
             var comps = ComponentsInTreeOrder(modelDoc, asm);
+            var refErrors = ComponentReferenceErrors(modelDoc);
             {
                 foreach (var comp in comps)
                 {
@@ -246,11 +247,13 @@ namespace SolidworksExecution.Services
                     catch { }
                     var t = TransformJson(comp);
                     if (t != null) cj["transform"] = t;
+                    AddComponentStatus(comp, cj, refErrors);
                     arr.Add(cj);
                 }
             }
             root["component_count"] = arr.Count;
             root["components"] = arr;
+            root["summary"] = SummarizeComponents(arr);
             return root;
         }
 
@@ -323,6 +326,7 @@ namespace SolidworksExecution.Services
                                 catch { }
                             }
                             mj["entities"] = ents;
+                            AddMateExtras(sub, mate, mtype, mj);
                             arr.Add(mj);
                         }
                         sub = sub.GetNextSubFeature() as IFeature;
@@ -332,6 +336,7 @@ namespace SolidworksExecution.Services
             }
             root["mate_count"] = arr.Count;
             root["mates"] = arr;
+            root["summary"] = SummarizeMates(arr);
             return root;
         }
 
@@ -439,7 +444,8 @@ namespace SolidworksExecution.Services
         }
 
         // analyze_assembly — the B1 READ tool. analysis_type: 'components' (tree + transforms),
-        // 'mates' (creation order, enum types, values, entity anchors), 'faces'/'edges'
+        // 'mates' (creation order, enum types, values, entity anchors, suppression/flip/limits/errors),
+        // 'interference' (volumes + locations, options restored), 'faces'/'edges'
         // (component-scoped, index-first; requires 'component'). Read-only, no state bump.
         // mass_properties for the whole assembly: analyze_model(mass_properties) already works.
         [Tool("analyze_assembly")]
@@ -493,6 +499,17 @@ namespace SolidworksExecution.Services
                 {
                     results.Add(ReadMates(modelDoc).ToString(Newtonsoft.Json.Formatting.None));
                 }
+                else if (analysisType == "interference")
+                {
+                    var res = ReadInterference(modelDoc, asm,
+                        p?.Value<bool?>("coincident") ?? false,
+                        p?.Value<bool?>("subassemblies_as_components") ?? false,
+                        p?.Value<int?>("limit") ?? InterferenceLimitDefault);
+                    if (res == null)
+                        return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
+                            "INTERFERENCE_FAILED", "SolidWorks returned no interference detection manager for this assembly.");
+                    results.Add(res.ToString(Newtonsoft.Json.Formatting.None));
+                }
                 else if (analysisType == "faces" || analysisType == "edges")
                 {
                     string componentName = p?.Value<string>("component");
@@ -510,7 +527,7 @@ namespace SolidworksExecution.Services
                 {
                     return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
                         "UNSUPPORTED_ANALYSIS_TYPE",
-                        $"analysis_type '{analysisType}' is not supported. Supported: components, components_flat, mates, faces, edges.");
+                        $"analysis_type '{analysisType}' is not supported. Supported: components, components_flat, mates, interference, faces, edges.");
                 }
 
                 // Read-only — no state bump (same pattern as AnalyzeModel).
@@ -524,7 +541,7 @@ namespace SolidworksExecution.Services
                     {
                         StateVersion = _guard.GetCurrentStateVersion(),
                         ActiveDocument = modelDoc.GetTitle(),
-                        DocumentType = "ASSEMBLY",
+                        DocumentType = DocTypeName(modelDoc),
                         ActiveSketch = null,
                         Features = results,
                         Dimensions = new List<string>()

@@ -23,9 +23,17 @@ except Exception:  # noqa: BLE001
 
 # 94_000 -> 95_700: the mesh front end adds analyze_mesh (~1.6K) and open_document gained mesh_as/units (~0.3K);
 # measured 95.5K with 61 tools. (60 tools incl. the 5 design_* tools measured 93.6K before.)
-TOTAL_CHARS_CEILING = 95_700
+# 95_700 -> 97_500: compare_to_reference (~1.9K, adapter-only silhouette diff of the model against a reference view);
+# measured 97.4K with 62 tools.
+# 97_500 -> 97_600: reference-diff loop (verify profile/dimensions, journal trend), export_image labels/section/zoom,
+# analyze_assembly interference and analyze_model overview/measure/sketch health added ~6K of capability; compressing
+# the analyze_model docstring (-2.8K) absorbed most of it. Measured 97.5K with 62 tools.
+# 97_600 -> 99_700: drawing tools now document their real behaviour (export all-sheets / format checks / file verification,
+# center-mark and annotation view targeting, tiled prepare_drawing with tile index and paged text, vector reference compare);
+# ~2.1K, measured 99.6K with 62 tools. analyze_drawing shrank by 132 chars.
+TOTAL_CHARS_CEILING = 99_700
 PER_TOOL_CHARS_CEILING = 13_500       # analyze_drawing is the outlier at ~13.1K
-TOOL_COUNT_CEILING = 61               # +analyze_mesh (adapter-only mesh reverse-engineering front end)
+TOOL_COUNT_CEILING = 62               # +analyze_mesh (mesh front end), +compare_to_reference (reference silhouette diff)
 INTERNAL_REF = re.compile(r"ADR-\d+|KNOWN-LIMITATIONS|IR-ADR|\bP0\.\d|recipe\.md\b")
 
 

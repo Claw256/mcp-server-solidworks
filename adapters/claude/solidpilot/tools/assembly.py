@@ -22,28 +22,41 @@ def open_new_assembly(template_path: str = "") -> str:
 # ---------------------------------------------------------------------------
 @mcp.tool(structured_output=False)
 def analyze_assembly(
-    analysis_type: Literal["components", "components_flat", "mates", "faces", "edges"],
+    analysis_type: Literal["components", "components_flat", "mates", "interference", "faces", "edges"],
     component: str = "",
+    coincident: bool = False,
+    subassemblies_as_components: bool = False,
+    limit: int = 20,
 ) -> str:
     """Analyze the active ASSEMBLY document (read-only, does NOT change state).
     analysis_type='components': top-level component occurrences in FEATURE-TREE order — per
         instance: name (instance-numbered, e.g. 'Shaft-1'), source file path, config, fixed /
         suppressed flags, children count (a subassembly — out of scope, recorded as a gap), and
         the FULL transform (13 numbers: 3x3 rotation row-major + translation in meters + scale)
-        — the position ground truth for round-trip verification.
+        — the position ground truth for round-trip verification. Status keys appear only when
+        set: hidden, out_of_date, constrained ('under'|'over'|...), solve (subassembly rigid/
+        flexible), error/warning (rebuild state). Plus a one-line `summary`.
     analysis_type='components_flat': LEAF occurrences across ALL nesting levels (depth-first
         tree order, transforms in ROOT space, each with its parent's name) — flattens a
         wrapper/subassembly level for ground-truth acquisition; the IR itself stays flat.
     analysis_type='mates': all mates in CREATION order — type and alignment from the SolidWorks
         ENUMS (locale-proof), the SI value for distance/angle mates, and per mate entity: owning
         component, entity kind (plane/cylinder/circle/...), and its geometric params in ASSEMBLY
-        space (location + direction + radii).
+        space (location + direction + radii). Extra keys only when readable: suppressed, flipped,
+        lock_rotation, limits {min,max} (limit mates), error/warning; plus a `summary`.
+    analysis_type='interference': volume of overlap per component pair, largest first —
+        {components, volume_mm3, bbox + center (assembly space, meters)}, capped to `limit`
+        with the total count. coincident=True counts touching faces; subassemblies_as_components=
+        True ignores overlaps inside a subassembly. Opens/closes the interference pane itself.
     analysis_type='faces' / 'edges': ONE component's face/edge list with stable indices — feeds
         add_mate's index-based entity selection. Requires `component` (the Name2 from
         'components'). Coordinates are COMPONENT-LOCAL (the payload carries the transform)."""
     params = {"analysis_type": analysis_type}
     if component:
         params["component"] = component
+    if analysis_type == "interference":
+        params.update({"coincident": coincident,
+                       "subassemblies_as_components": subassemblies_as_components, "limit": limit})
     return _call("analyze_assembly", params)
 
 

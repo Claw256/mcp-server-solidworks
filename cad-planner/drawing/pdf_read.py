@@ -11,21 +11,26 @@ What a PDF does NOT carry, and what is therefore HEURISTIC here (and reported, n
     their line; a diameter/radius from a `Ø`/`R` number that matches the size of exactly one nearby circle/arc.
     Numbers that fit neither stay in `sheet.pdf.unassigned_numbers` for Claude to read with vision.
   * the drawing scale: read from title-block text ("SCALE 1:2", "Maßstab 1:2"), else assumed 1:1 and SAID so.
-  * line types: a dash pattern maps to hidden (2-element) or centre (4+ elements). Exporters that BAKE the
+  * line types: a dash pattern maps to hidden (2-element) or centre (4+ elements); a HEAVY chain line
+    (stroke >= 0.35 mm) is a section CUT line, the way ISO 128 draws it (thick), not a centre line. Exporters that BAKE the
     dashes into geometry (many separate short solid segments) are recovered by `_merge_baked_dashes`: collinear
     visible segments (angle <= 0.5 deg, offset <= 0.15 mm) forming a chain of >= 4 dashes with regular gaps
     (gap 0.3-4 mm and shorter than the dash, each within 20 % of the median gap) become ONE line --
     'hidden' when the dashes are equal (CV < 0.25, mean 1.5-8 mm), 'center' when long/short alternate
     (ratio >= 2, each kind CV < 0.25). Anything irregular stays as drawn. Counted in the page report as
     `dashes_merged` (chains) and `dash_segments_merged`. NOT handled: a circle/arc dashed as many tiny arcs.
-Scans / raster-only pages are refused: there is nothing to extract (use prepare_drawing + vision).
+  * the scale text: every `SCALE a:b` is collected; a per-view caption ("DETAIL B SCALE 2:1") never
+    wins over the title block's own statement, and the candidates are reported (sheet.pdf.scale_candidates).
+Scans / raster-only pages are refused -- no vector geometry, OR the page is mostly a raster image (a scan
+with a vector border): there is nothing reliable to extract (use prepare_drawing + vision).
 """
 import math
 import re
 
 try:
-    from . import dxf_read
+    from . import callouts, dxf_read
 except ImportError:                 # run as a script
+    import callouts
     import dxf_read
 
 _K = 25.4 / 72.0                   # PDF points -> millimetres of PAPER
@@ -88,11 +93,16 @@ def _bezier_arc(p0, p1, p2, p3):
     return cx, cy, r, cross > 0
 
 
-def _dash_class(dashes):
+CUT_LINE_PEN_MM = 0.35      # a dash-dot chain at least this heavy is a section CUT line (ISO 128 type H)
+
+
+def _dash_class(dashes, width_mm=0.0):
     nums = [float(x) for x in re.findall(r"[-+]?\d*\.?\d+", (dashes or "").split("]")[0])]
     if not nums:
         return "visible"
-    return "hidden" if len(nums) <= 2 else "center"
+    if len(nums) <= 2:
+        return "hidden"
+    return "cut_line" if width_mm >= CUT_LINE_PEN_MM else "center"
 
 
 def _cv(v):
@@ -238,7 +248,7 @@ def _extract(page):
                 if 1.0 <= length <= 9.0 and length >= 1.5 * base_len and base_len > 0.05:
                     arrows.append((tip, ((tip[0] - bm[0]) / length, (tip[1] - bm[1]) / length), length))
             continue
-        cls = _dash_class(path.get("dashes"))
+        cls = _dash_class(path.get("dashes"), (path.get("width") or 0.0) * _K)
         arc_run = []                                       # consecutive bezier arcs of one circle
 
         def flush():
@@ -357,16 +367,64 @@ def _num(s):
     return float(s.replace(",", "."))
 
 
-def _detect_scale(texts, override=""):
+def _scale_candidates(texts):
+    """Every keyed scale statement on the page -> [{text, a, b, at:[x,y], kind}], in stream order.
+    kind is 'view' for a per-view caption ("DETAIL B SCALE 2:1", "SECTION A-A 1:1") and 'sheet' otherwise.
+    A keyword span followed by a ratio span ("SCALE" "1:2") is joined, as the old blob search did.
+    `texts` items are (string, x, y, ...) -- or a bare (string,) when the caller has no positions
+    (`at` is then None and only the stream order can break a tie)."""
+    out = []
+
+    def at(t):
+        return (float(t[1]), float(t[2])) if len(t) > 2 else None
+    for i, t in enumerate(texts):
+        s = t[0]
+        hit = _SCALE_RE.search(s)
+        if not hit and i + 1 < len(texts):
+            s = s + "  " + texts[i + 1][0]
+            hit = _SCALE_RE.search(s)
+        if not hit or not (_num(hit.group(1)) > 0 and _num(hit.group(2)) > 0):
+            continue
+        ctx = s
+        p, q = at(t), (at(texts[i - 1]) if i > 0 else None)
+        if i > 0 and (p is None or q is None or math.hypot(p[0] - q[0], p[1] - q[1]) <= 25.0):
+            ctx = texts[i - 1][0] + " " + s                    # the caption often precedes its SCALE span
+        out.append({"text": "%s:%s" % (hit.group(1), hit.group(2)), "a": _num(hit.group(1)),
+                    "b": _num(hit.group(2)), "at": [round(p[0], 1), round(p[1], 1)] if p else None,
+                    "kind": "view" if callouts.is_view_label(ctx) else "sheet"})
+    return out
+
+
+def _pick_scale(cands, page_mm=None):
+    """The SHEET's own scale among the candidates: a 'sheet' statement in the title-block corner (bottom
+    right; the one nearest the corner when several), else the last 'sheet' statement in the stream.
+    -> (candidate, in_corner) or (None, False)."""
+    sheet = [c for c in cands if c["kind"] == "sheet"]
+    if not sheet:
+        return None, False
+    if page_mm:
+        w, h = page_mm
+        corner = [c for c in sheet if c["at"] and c["at"][0] > 0.5 * w and c["at"][1] < 0.35 * h]
+        if corner:
+            return max(corner, key=lambda c: c["at"][0] - c["at"][1]), True
+    return sheet[-1], False
+
+
+def _detect_scale(texts, override="", page_mm=None):
     if override:
         m = re.match(r"^\s*(\d+(?:[.,]\d+)?)\s*:\s*(\d+(?:[.,]\d+)?)\s*$", override)
         if not m:
             raise ValueError("scale must look like '1:2' (paper:true), got %r" % override)
         return _num(m.group(2)) / _num(m.group(1)), override.strip(), "argument"
-    blob = "  ".join(t[0] for t in texts)
-    m = _SCALE_RE.search(blob)
-    if m and _num(m.group(1)) > 0 and _num(m.group(2)) > 0:
-        return _num(m.group(2)) / _num(m.group(1)), "%s:%s" % (m.group(1), m.group(2)), "title block text"
+    cands = _scale_candidates(texts)
+    pick, in_corner = _pick_scale(cands, page_mm)
+    if pick:
+        return (pick["b"] / pick["a"], pick["text"],
+                "title block text" if (in_corner or not page_mm or len(cands) == 1) else "scale text (not in the "
+                "title-block corner)")
+    if cands:
+        return 1.0, "1:1", ("ASSUMED (only per-view scale captions found: %s) -- check the title block"
+                            % ", ".join(c["text"] for c in cands))
     return 1.0, "1:1", "ASSUMED (no scale text found) -- check the title block"
 
 
@@ -404,6 +462,26 @@ def _is_dimension_furniture(a, b, dims):
     return False
 
 
+def _image_coverage(page):
+    """Fraction of the page area covered by raster images (union approximated by the largest image plus
+    the clipped sum, capped at 1). 0 when the page has none or PyMuPDF cannot say."""
+    try:
+        area = page.rect.width * page.rect.height
+        if area <= 0:
+            return 0.0
+        total = 0.0
+        for im in page.get_image_info():
+            r = page.rect & fitz_rect(im["bbox"])
+            total += max(0.0, r.width) * max(0.0, r.height)
+        return min(1.0, total / area)
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+def fitz_rect(b):
+    return _fitz().Rect(*b)
+
+
 def build_dxf_doc(page, scale_override="", pen_mm=0.0):
     """-> (ezdxf doc, report). The document is what `dxf_read.read_doc` consumes.
     pen_mm > 0 keeps ONLY primitives stroked with that pen width as part geometry (the rest -- dimension lines,
@@ -428,7 +506,16 @@ def build_dxf_doc(page, scale_override="", pen_mm=0.0):
     if len(prims) < 5:
         raise ValueError("this page has almost no vector geometry (%d paths) -- it is a scan or an image; "
                          "use prepare_drawing and read it with vision" % len(prims))
-    factor, scale_label, scale_src = _detect_scale(texts, scale_override)
+    cover = _image_coverage(page)
+    if cover >= 0.5:
+        # A SCAN with a vector border / title block (or an OCR'd scan): the few vector paths are not the
+        # drawing, the picture is. Reading them would return a confident, empty-looking part.
+        raise ValueError("this page is %d%% covered by raster images -- it is a scan (the %d vector paths are "
+                         "only a border/frame); use prepare_drawing and read it with vision"
+                         % (round(100 * cover), len(prims)))
+    page_mm = (page.rect.width * _K, page.rect.height * _K)
+    factor, scale_label, scale_src = _detect_scale(texts, scale_override, page_mm)
+    scale_cands = _scale_candidates(texts)
 
     def center(t):
         return (t[1] + len(t[0]) * t[3] * 0.3, t[2] + t[3] * 0.4)
@@ -492,7 +579,10 @@ def build_dxf_doc(page, scale_override="", pen_mm=0.0):
     ds = doc.dimstyles.duplicate_entry("Standard", "SLD_PDF")
     ds.dxf.dimlfac = factor
     msp = doc.modelspace()
-    ltype = {"visible": "Continuous", "hidden": "HIDDEN", "center": "CENTER"}
+    ltype = {"visible": "Continuous", "hidden": "HIDDEN", "center": "CENTER", "cut_line": "PHANTOM"}
+    if "PHANTOM" not in doc.linetypes:
+        doc.linetypes.add("PHANTOM", pattern=[12.7, 6.35, -3.175, 3.175, -3.175, 3.175, -3.175],
+                          description="Phantom")
     dim_pairs = [(ta, tb) for ta, tb, _t in linear]
     dropped = 0
     for pr in prims:
@@ -521,6 +611,8 @@ def build_dxf_doc(page, scale_override="", pen_mm=0.0):
                   for i, t in num_tokens + dia_tokens + rad_tokens if i not in used_tokens]
     report = {"page_size_mm": [round(page.rect.width * _K, 1), round(page.rect.height * _K, 1)],
               "scale": scale_label, "scale_factor": factor, "scale_source": scale_src,
+              **({"scale_candidates": [{k: c[k] for k in ("text", "at", "kind")} for c in scale_cands]}
+                 if len(scale_cands) > 1 else {}),
               "paths": len(prims), "dashes_merged": n_chains, "dash_segments_merged": n_segs,
               "arrowheads": len(arrows), "dimensions_made": made,
               "dimension_lines_dropped": dropped, "unassigned_numbers": unassigned[:80],
@@ -543,4 +635,12 @@ def read_pdf(path, cfg, page=1, scale="", pen_mm=0.0):
     auditor = doc.audit()
     art = dxf_read.read_doc(doc, auditor, path, cfg, source_kind="pdf")
     art["sheet"]["pdf"] = dict(report, page=page)
+    cands = report.get("scale_candidates") or []
+    if len({c["text"] for c in cands}) > 1:
+        used = report["scale"]
+        art["sheet"].setdefault("advisories", []).append({
+            "code": "SCALE_CANDIDATES",
+            "text": "the page carries several scale statements (%s); used %s (%s). Per-view captions ('view') "
+                    "never set the sheet scale; check the title block if this is not the sheet's own."
+                    % (", ".join("%s [%s]" % (c["text"], c["kind"]) for c in cands), used, report["scale_source"])})
     return art

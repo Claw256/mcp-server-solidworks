@@ -25,6 +25,57 @@ PRIMITIVE_KINDS = frozenset({"lines", "arcs", "circles", "ellipses"})   # view.g
 # "e"/"ellipses" since 0.5.0: a real DXF ELLIPSE entity, or an exploded curve fan the fitter
 # collapsed (record carries `n` + `fit` then) -- see curvefit.py.
 
+# --- reader advisories ---------------------------------------------------------------------------
+# `sheet.advisories` is [{"code", "text"}], present ONLY when something fired; every code is one of
+# these. They are FACTS about how trustworthy the read is (never silent conversions): a reader that
+# guesses a unit/scale/layout says so here and keeps the unconverted value. Documented in the schema's
+# `sheet_additions` prose and diffed by tests/test_reader_hardening.py.
+ADVISORY_CODES = frozenset({
+    "SCALE_MISMATCH",        # title-block scale text disagrees with the DIMLFAC-derived sheet scale
+    "SCALE_CANDIDATES",      # several scale texts on a PDF page; which one was used is reported
+    "UNITS_UNSET",           # $INSUNITS 0/absent: kept as mm, with an inch/mm hint -- NEVER converted
+    "PROJECTION_MISMATCH",   # the drawing states one projection method, config.projection is the other
+    "LAYOUT_AUTO",           # several layouts had content; only one was read (the others are named)
+    "LAYOUT_MERGED",         # layout='*': several layouts were deliberately merged into one space
+    "DIMLFAC_MIXED",         # dimensions use dimstyles with different DIMLFAC; per-dimension factors used
+    "BLOCK_GEOMETRY_READ",   # INSERT block geometry/dimensions of a non-SolidWorks file were read
+    "ZERO_VIEWS",            # no view cluster found: nothing to build from
+})
+
+# --- LINETYPE NAME -> edge class (dxf_read.edge_class) -------------------------------------------------
+# First matching prefix wins. HIDDEN*/PHANTOM*/CENTER* are the SolidWorks names and keep their old
+# class. Everything else is a CAD-vendor family (AutoCAD acad.lin, ISO 128: 'ISO02W100' and
+# 'ACAD_ISO02W100' are the same name). A chain-type line (dash-dot family) is a CENTRE line when thin
+# and a CUT line when drawn heavy (ISO 128 type H: thick at the ends): HEAVY_LINEWEIGHT (1/100 mm) is
+# the lineweight at or above which the 3rd column applies -- the ONLY place lineweight is consulted,
+# as a tie-break and never as the primary key. An unknown name stays 'visible' (the safe default: it
+# is counted as geometry, not hidden away).
+#   (prefix, class, heavy_class_or_None)
+LINETYPE_CLASSES = (
+    ("HIDDEN", "hidden", None),
+    ("PHANTOM", "cut_line", None),
+    ("CENTER", "center", None),
+    ("DASHDOT", "center", "cut_line"),
+    ("DASHED", "hidden", None),
+    ("DIVIDE", "center", "cut_line"),
+    ("DOT", "hidden", None),
+    ("ACAD_ISO02", "hidden", None),        # ISO dash
+    ("ACAD_ISO03", "hidden", None),        # ISO dash space
+    ("ACAD_ISO04", "center", "cut_line"),  # ISO long-dash dot
+    ("ACAD_ISO05", "cut_line", None),      # ISO long-dash double-dot
+    ("ACAD_ISO06", "cut_line", None),      # ISO long-dash triple-dot
+    ("ACAD_ISO07", "hidden", None),        # ISO dot
+    ("ACAD_ISO08", "center", "cut_line"),  # ISO long-dash short-dash
+    ("ACAD_ISO09", "center", "cut_line"),  # ISO long-dash double-short-dash
+    ("ACAD_ISO10", "center", "cut_line"),  # ISO dash dot
+    ("ACAD_ISO11", "center", "cut_line"),  # ISO double-dash dot
+    ("ACAD_ISO12", "center", "cut_line"),  # ISO double-dash double-dot
+    ("ACAD_ISO13", "center", "cut_line"),  # ISO triple-dash dot
+    ("ACAD_ISO14", "center", "cut_line"),  # ISO triple-dash double-dot
+    ("ACAD_ISO15", "center", "cut_line"),  # ISO triple-dash triple-dot
+)
+HEAVY_LINEWEIGHT = 35                      # 0.35 mm
+
 # --- view graph --------------------------------------------------------------------------------
 # How strongly a projection pair is evidenced: full shared span > shared midpoints (a silhouette
 # may genuinely be longer in one view -- s-7's bevelled beam) > a section label ("A-A", which even

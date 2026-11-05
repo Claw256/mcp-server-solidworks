@@ -613,7 +613,7 @@ namespace SolidworksExecution.Services
                     {
                         StateVersion = _guard.GetCurrentStateVersion(),
                         ActiveDocument = modelDoc.GetTitle(),
-                        DocumentType = "PART",
+                        DocumentType = DocTypeNameOf(modelDoc),
                         ActiveSketch = activeSketch != null ? (activeSketch as IFeature)?.Name : null,
                         Features = featureNames,
                         Dimensions = new List<string>()
@@ -841,43 +841,32 @@ namespace SolidworksExecution.Services
                     return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
                         "WRONG_DOCUMENT_TYPE", $"Export format '{format}' requires an active drawing document (not a part). Call create_drawing first.");
 
-                // SolidWorks infers the format from the extension; its IGES translator only recognizes
-                // .igs (not .iges → SaveAs error 256). Correct it so an explicit .iges path still works.
-                if (format == "IGES" && !filePath.ToLowerInvariant().EndsWith(".igs"))
-                    filePath = System.IO.Path.ChangeExtension(filePath, "igs");
+                // SolidWorks infers the format from the extension, so a mismatch would silently write another
+                // format. Reject it; IGES's .iges is corrected to .igs (its translator only recognizes .igs,
+                // not .iges → SaveAs error 256).
+                string extError;
+                if (!ExportFormats.CheckExtension(format, filePath, out filePath, out extError))
+                    return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
+                        "INVALID_PARAMETER", extError);
 
                 // Ensure output directory exists
                 string dir = System.IO.Path.GetDirectoryName(filePath);
                 if (!string.IsNullOrEmpty(dir) && !System.IO.Directory.Exists(dir))
                     System.IO.Directory.CreateDirectory(dir);
 
-                int exportErrors = 0;
-                int exportWarnings = 0;
-                bool success;
-
-                if (format == "PDF")
-                {
-                    // PDF requires ExportPdfData options object
-                    var exportData = _solidWorks.GetExportFileData(
-                        (int)swExportDataFileType_e.swExportPdfData) as ExportPdfData;
-                    success = modelDoc.Extension.SaveAs3(filePath,
-                        (int)swSaveAsVersion_e.swSaveAsCurrentVersion,
-                        (int)swSaveAsOptions_e.swSaveAsOptions_Silent,
-                        exportData, null,
-                        ref exportErrors, ref exportWarnings);
-                }
-                else
-                {
-                    success = modelDoc.Extension.SaveAs3(filePath,
-                        (int)swSaveAsVersion_e.swSaveAsCurrentVersion,
-                        (int)swSaveAsOptions_e.swSaveAsOptions_Silent,
-                        null, null,
-                        ref exportErrors, ref exportWarnings);
-                }
+                int exportErrors;
+                int exportWarnings;
+                DateTime exportStartedUtc = DateTime.UtcNow;
+                bool success = SaveAsExport(modelDoc, format, filePath, out exportErrors, out exportWarnings);
 
                 if (!success)
                     return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
                         "EXPORT_FAILED", $"SaveAs3 failed for format '{format}'. Errors: {exportErrors}, Warnings: {exportWarnings}. Ensure the output path is writable and the format matches the document type.");
+
+                string missing = CheckExportedFile(filePath, exportStartedUtc);
+                if (missing != null)
+                    return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
+                        "EXPORT_FILE_MISSING", $"SaveAs3 reported success for '{filePath}' but {missing}. Check the path is writable and not locked by another program.");
 
                 // ExportDocument does NOT increment state_version — no CAD state change
                 var response = new ExecutionResponse
@@ -975,25 +964,15 @@ namespace SolidworksExecution.Services
                     string ext = fmt == "IGES" ? "igs" : fmt.ToLowerInvariant();
                     string outPath = filePathBase + "." + ext;
 
-                    int exportErrors = 0;
-                    int exportWarnings = 0;
-                    bool success;
-
-                    if (fmt == "PDF")
+                    int exportErrors;
+                    int exportWarnings;
+                    DateTime exportStartedUtc = DateTime.UtcNow;
+                    bool success = SaveAsExport(modelDoc, fmt, outPath, out exportErrors, out exportWarnings);
+                    string missing = success ? CheckExportedFile(outPath, exportStartedUtc) : null;
+                    if (missing != null)
                     {
-                        var exportData = _solidWorks.GetExportFileData(
-                            (int)swExportDataFileType_e.swExportPdfData) as ExportPdfData;
-                        success = modelDoc.Extension.SaveAs3(outPath,
-                            (int)swSaveAsVersion_e.swSaveAsCurrentVersion,
-                            (int)swSaveAsOptions_e.swSaveAsOptions_Silent,
-                            exportData, null, ref exportErrors, ref exportWarnings);
-                    }
-                    else
-                    {
-                        success = modelDoc.Extension.SaveAs3(outPath,
-                            (int)swSaveAsVersion_e.swSaveAsCurrentVersion,
-                            (int)swSaveAsOptions_e.swSaveAsOptions_Silent,
-                            null, null, ref exportErrors, ref exportWarnings);
+                        failed.Add($"{fmt}:{missing}");
+                        continue;
                     }
 
                     if (success) exported.Add(outPath);

@@ -132,8 +132,11 @@ what was simplified in the handover.
   - `NOT_DIRECT | reason` (normal for machined parts): you get the whole analysis; build it incrementally with
     `design_new` / `design_step` (step 4).
 - Scanned PDF or image, or when you need to *see* the input: `prepare_drawing(file_path)` returns legible image
-  tiles plus the exact text layer. It accepts images as well as PDF pages. Take numbers from the text layer,
-  not from measuring pixels. Use `annotate_regions` to check that a location you read is really where you
+  tiles (~300 dpi, view-aligned, also on A1/A0) plus the exact text layer. It accepts PDF, images **and DXF / DWG /
+  SLDDRW**. Read `tile_index` and `warnings`: if tiles were not returned, request them with `tiles=[...]` before
+  you rely on the drawing, and zoom with `region` for dense dimension clusters. Check `text_layer_reliability`
+  (`exact` -> trust the strings; `outlined`/`none`/`ocr` -> read by vision and label it `vision`). Take numbers from
+  the text layer, not from measuring pixels. Use `annotate_regions` to check that a location you read is really where you
   think it is — a contour on a render, a viewport in a screenshot.
 - **Reference-image numbers are estimates.** Unless a dimension is printed on the image or given by the
   user, anything you measure is `vision`: proportions between features, not absolute sizes. Real
@@ -200,7 +203,30 @@ thickness was chosen and why. Then:
 - Pass expected numbers **only when real numbers exist** (printed or user-given). For reference images
   verify what proportion supports: bbox ratios between axes, hole and feature counts, symmetry about the
   intended plane. Do not feed vision estimates into `verify_against_interpretation` as if they were dimensions.
-- Look at it: `export_image` and compare with the input by eye, especially orientation. Label the pair
+- **Diff it, don't just eyeball it.** For each view the input gives you (front/top/side, a crop of one view on a
+  drawing sheet via `region`), run `compare_to_reference(reference, view, region=...)`. It returns the IoU and the
+  mismatch regions in mm — `model_has_extra` (the model has material the reference lacks) or `model_missing` — with
+  the `suspect_features` / design nodes whose geometry sits there. Fix the largest region with `design_step`
+  (`set` the depth or dimension, or `replace` the node), then call it again; `design_undo` if the IoU got worse.
+  Stop when the verdict is `match`, or the remaining regions are inside the stated `edge_tolerance_mm`. Rules:
+  `REGISTRATION_WEAK` means the crop, the view name or the overall proportions are wrong — fix that first, do not
+  tune the model against it; the reference is scaled to the model's bounding box, so check overall size with
+  `verify_against_interpretation` bbox when a real number exists; a photo or render supports a `vision`-labelled
+  overlap, never a dimension; when two reference views disagree, ask the user. Needs `requirements-compare.txt`.
+  A region may carry a `design_step_hint`: a *suggested* patch (meters) with its reasoning. It is a starting
+  point, not a fix: check it against the drawing, apply it with `design_step` only if you agree, and
+  re-compare. Each compare and verify is recorded on the current design step; `design_history` shows the score
+  per step and whether it `improved`, got `worse` or stayed the `same` — if a step made it worse, `design_undo`.
+- Final check: `verify_against_interpretation` can also run the same overlap per view (`profile`: view,
+  reference, optional region/page/`min_iou`) and measure drawing dimensions on the model for you
+  (`dimensions`: `a`/`b` = `{face: i}` | `{edge: i}` | `{point: [x,y,z]}` in meters, indices from
+  `analyze_model` faces/edges, `kind` distance|angle|radius|diameter|length, `value_mm`/`value_deg`). Put only
+  numbers the drawing text prints in `dimensions`; a vision read belongs in `profile` or nowhere. A row it
+  cannot check is NOT CHECKED with a reason — report it, do not treat it as a pass.
+- Look at it: `export_image` and compare with the input by eye, especially orientation. `labels='faces'` prints the
+  `analyze_model` face indices on the picture, `section` / `zoom_to` / `highlight` show one region, and
+  `analyze_model(overview)` reads the whole parametric state in one call (features with rebuild errors, dimensions,
+  mass, sketch solve status via `sketch`) — use the indices and names it gives when you `design_step`. Label the pair
   honestly — "Image 1: your reference, Image 2: the model". A mirrored or wrong-side feature keeps the
   volume identical; `cg_mm` and a read-back of one face catch it.
 - Report the PASS/FAIL rows honestly, including anything NOT CHECKED.

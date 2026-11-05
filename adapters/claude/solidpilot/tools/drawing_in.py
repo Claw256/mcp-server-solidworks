@@ -5,6 +5,7 @@ from typing import Literal
 import slddrw_merge
 from solidpilot import bridge
 from solidpilot import clarify
+from solidpilot import design as design_core
 from solidpilot import jobs
 from solidpilot import expectations
 from solidpilot.app import mcp
@@ -127,12 +128,18 @@ def _advisories(art) -> str:
         out.append("pdf source — dimensions were RECOGNISED from arrowheads and text, not read from "
                    "DIMENSION entities; cross-check the overall size with verify_against_interpretation.")
 
-    layouts = [l for l in ((art.get("sheet") or {}).get("layouts") or []) if l.get("entities")]
-    if len(layouts) > 1 and not (art.get("sheet") or {}).get("layout_selected"):
-        out.append("layouts @ sheet (%s) — several layouts carry content and were MERGED into one "
-                   "coordinate space; frames, views and the title block will not make sense. Re-run "
-                   "analyze_drawing with layout='<name>' to read one at a time."
-                   % ", ".join("%s:%d" % (l["name"], l["entities"]) for l in layouts))
+    sh = art.get("sheet") or {}
+    layouts = [l for l in (sh.get("layouts") or []) if l.get("entities")]
+    if len(layouts) > 1 and not sh.get("layout_selected"):
+        listing = ", ".join("%s:%d" % (l["name"], l["entities"]) for l in layouts)
+        if sh.get("layout_auto"):
+            out.append("layouts @ sheet (%s) — several layouts carry content; ONLY '%s' was read (merging model "
+                       "and paper space double counts the part). layout='<name>' reads another, layout='*' merges "
+                       "them on purpose." % (listing, sh["layout_auto"].get("chosen")))
+        else:
+            out.append("layouts @ sheet (%s) — several layouts carry content and were MERGED into one "
+                       "coordinate space; frames, views and the title block will not make sense. Re-run "
+                       "analyze_drawing with layout='<name>' to read one at a time." % listing)
 
     not_read = (art.get("sheet") or {}).get("not_read") or {}
     if not_read:
@@ -174,6 +181,27 @@ def _advisories(art) -> str:
         out.append("view_graph.solved:false (%s) — the axes did not join; that joining is yours."
                    % vg.get("reason", "reason in the field"))
 
+    # The reader's own advisories (sheet.advisories: SCALE_MISMATCH, UNITS_UNSET, PROJECTION_MISMATCH, ...).
+    # The layout ones are worded above and ZERO_VIEWS below, where the route is known.
+    for adv in sh.get("advisories") or []:
+        if adv.get("code") not in ("LAYOUT_AUTO", "LAYOUT_MERGED", "ZERO_VIEWS"):
+            out.append("%s @ sheet — %s" % (adv.get("code"), adv.get("text")))
+
+    if not views:
+        via = (art.get("source") or {}).get("converted_from")
+        out.append("ZERO_VIEWS — %s" % (
+            f"the DXF SolidWorks exported from {via} holds no view: a .SLDDRW needs its model reachable (views "
+            "are blank otherwise), the export covers the ACTIVE sheet only, and its units/version come from the "
+            "user's export profile. Check the drawing in SolidWorks, or read a DXF/PDF the user already has."
+            if via else "no view could be built; check layout= (sheet.layouts), the units and sheet.not_read "
+                        "(a part drawn only as HATCH/blocks has no geometry to read)."))
+    sheets = ((sh.get("slddrw") or {}).get("sheets")) or []
+    if len(sheets) > 1:
+        out.append("MULTI_SHEET @ sheet.slddrw (%d sheets: %s) — the DXF export most likely wrote ONLY the active "
+                   "sheet, so the other sheets' views and dimensions are missing from the geometry (the native "
+                   "extras list them without geometry). Activate each sheet and re-run, or export per sheet."
+                   % (len(sheets), ", ".join(str(s.get("name")) for s in sheets)))
+
     sw_line = slddrw_merge.advisory(art)
     if sw_line:
         out.append(sw_line)
@@ -182,6 +210,26 @@ def _advisories(art) -> str:
         return ""
     return "\nADVISORIES (%d) — only what actually fired in THIS read:\n  %s" % (
         len(out), "\n  ".join(out))
+
+
+def _export_target(src, ext):
+    """Where the DWG/SLDDRW -> DXF export is written -> (path, note | None). Beside the source, unless that
+    folder is read-only or an OLD `<name>2dxf.dxf` there cannot be removed: then a scratch folder. A stale
+    file is deleted first, so a failed export can never be mistaken for a fresh one."""
+    want = os.path.splitext(src)[0] + "." + ext[1:] + "2dxf.dxf"
+    folder = os.path.dirname(want)
+    try:
+        if os.path.exists(want):
+            os.remove(want)
+        import tempfile
+        with tempfile.TemporaryFile(dir=folder):
+            pass
+        return want, None
+    except OSError as exc:
+        import tempfile
+        alt = os.path.join(tempfile.mkdtemp(prefix="solidpilot_dxf_"), os.path.basename(want))
+        return alt, (f"the source folder is not writable or a stale {os.path.basename(want)} could not be "
+                     f"replaced ({exc}); the DXF was exported to {alt}")
 
 
 def _wire_json(obj) -> str:
@@ -343,9 +391,8 @@ def analyze_drawing(file_path: str, save_analysis: bool = True,
         outlined text, centre lines and title-block grid with others; with every pen mixed in, dimension glyphs
         cluster into dozens of junk "views". sheet.pdf.pens lists each pen (primitives, arcs/circles) and
         pen_suggested_mm names the arc-richest one (usually the part) — re-run with pen_mm=<that>.
-    layout: DXF layout name to read ('' = every layout merged, the historic behaviour). A sheet file
-        with several sheets/layouts overlays them all when this is blank — sheet.layouts lists the names
-        and entity counts, and the answer warns when more than one has content; pass one to read it alone.
+    layout: DXF layout to read. '' = auto (the one with content, Model first; sheet.layouts lists all and the
+        answer names any ignored); '*' merges every layout on purpose.
     save_analysis (default True): also write `<name>.analysis-v<version>.json` beside the source —
         a research artifact for cross-part study, versioned by the analyzer. Same version
         overwrites. You never need to read it back: this answer already carries everything in it."""
@@ -368,8 +415,12 @@ def analyze_drawing(file_path: str, save_analysis: bool = True,
 
     def _load():
         """Convert (DWG) + read + save -> (art, cfg, None) | (None, None, error string)."""
+        nonlocal dxf_path
         converted_from = None
         if ext in (".dwg", ".slddrw"):
+            dxf_path, _note = _export_target(src, ext)
+            if _note:
+                _save_warnings.append(_note)
             opened = bridge._call_raw("open_document", {"file_path": src})
             if opened.get("status") != "COMPLETED":
                 err = opened.get("error") or {}
@@ -398,6 +449,9 @@ def analyze_drawing(file_path: str, save_analysis: bool = True,
             if exported.get("status") != "COMPLETED":
                 err = exported.get("error") or {}
                 return None, None, f"FAILED | DWG_CONVERT_FAILED | {err.get('code')}: {err.get('message')}"
+            if not os.path.isfile(dxf_path) or os.path.getsize(dxf_path) == 0:
+                return None, None, (f"FAILED | DWG_CONVERT_FAILED | the export reported COMPLETED but wrote no "
+                                    f"DXF at {dxf_path}")
             converted_from = os.path.basename(src)
         if _draw is None:
             return None, None, f"FAILED | READER_UNAVAILABLE | {_DXF_READER_IMPORT_ERROR}"
@@ -421,7 +475,7 @@ def analyze_drawing(file_path: str, save_analysis: bool = True,
             except Exception as exc:             # noqa: BLE001 - merge is additive, never fatal
                 _save_warnings.append(f"native slddrw extras not merged: {type(exc).__name__}: {exc}")
         if save_analysis:
-            out = os.path.join(os.path.dirname(dxf_path),
+            out = os.path.join(os.path.dirname(src),
                                "%s.analysis-v%s.json" % (os.path.splitext(os.path.basename(src))[0],
                                                          art["analysis_version"]))
             try:
@@ -543,63 +597,41 @@ def analyze_drawing(file_path: str, save_analysis: bool = True,
 
 
 @mcp.tool(structured_output=False)
-def prepare_drawing(file_path: str, page: int = 1, region: str = "", dpi: int = 300) -> list:
-    """Make a PDF/image drawing legible: returns the page as safe-size image tiles PLUS its exact text layer.
+def prepare_drawing(file_path: str, page: int = 1, region: str = "", dpi: int = 300, tiles: str = "",
+                    max_images: int = 4, text_offset: int = 0, text_limit: int = 300) -> list:
+    """Make a drawing legible: page images sized to fit at high dpi PLUS its exact text layer.
 
-    Why: a PDF reaches you rasterised at a size you can't control, small dimension text degrades, and pixel
-    coordinates can't be mapped back. Here every image is sized to fit (never silently downscaled) and carries
-    its origin, so a pixel (px,py) in image n is page point (clip_x0 + px/px_per_pt, clip_y0 + py/px_per_pt).
-    The text layer gives dimension strings EXACTLY (page points, y down) — prefer it to reading digits by eye.
-    kind='vector' = text+paths (exact numbers); 'scan' = raster only (read by vision, mark as such).
+    A big sheet is returned as an overview + a pageable tile_index (view-aligned ~300 dpi tiles; the clip of every
+    tile is in meta). Only `max_images` come back per call; request more with tiles='[2,3]' (0 = overview). A pixel
+    (px,py) in image n is page point (clip_x0 + px/px_per_pt, clip_y0 + py/px_per_pt). dpi is never lowered silently:
+    meta.warnings says what to request next; meta has dpi_used, px_per_mm_paper, min_text_px.
+    Text layer: items 't@x0,y0,x1,y1[,rN]' (page points, y down, filtered to `region`, paged by text_offset/text_limit);
+    text_layer_reliability = exact (quote it) | ocr / outlined / none (READ the image). kind=vector|mixed|scan.
 
-    file_path: .pdf or .png/.jpg/.tif/.bmp. page: 1-based. dpi: render density (default 300; lowered
-    automatically to fit). region: JSON [x0,y0,x1,y1] in PAGE POINTS to zoom one area (e.g. a dimension
-    cluster or the title block) — use the text layer's coordinates. Needs PyMuPDF (requirements-pdf.txt)."""
-    src = os.path.abspath(file_path)
-    if not os.path.exists(src):
-        return [f"FAILED | FILE_NOT_FOUND | {src}"]
+    file_path: .pdf, an image (.png/.jpg/.tif/.bmp: no paper size or scale), or .dxf/.dwg/.slddrw (rendered).
+    region: JSON [x0,y0,x1,y1] in PAGE POINTS to zoom one area (a dimension cluster, the title block).
+    Needs PyMuPDF (requirements-pdf.txt)."""
+    src_path = os.path.abspath(file_path)
+    if not os.path.exists(src_path):
+        return [f"FAILED | FILE_NOT_FOUND | {src_path}"]
     try:
         import drawing_prep as dp
         from mcp.server.mcpserver.utilities.types import Image
-        fitz, doc = dp.open_source(src)
     except Exception as ex:  # noqa: BLE001
         return [f"FAILED | PDF_READER_UNAVAILABLE | {ex}"]
     try:
-        if not 1 <= page <= doc.page_count:
-            return [f"FAILED | BAD_PAGE | {src} has {doc.page_count} page(s); asked for {page}"]
-        pg = doc[page - 1]
-        rect = [pg.rect.x0, pg.rect.y0, pg.rect.x1, pg.rect.y1]
-        meta = {"file": os.path.basename(src), "page": page, "pages": doc.page_count,
-                "kind": dp.classify_page(pg), "page_pt": [round(rect[2], 1), round(rect[3], 1)],
-                "page_mm_on_paper": [round(dp.to_mm(rect[2]), 1), round(dp.to_mm(rect[3]), 1)]}
-        shots, regions = [], []
-        if region:
-            try:
-                regions = [tuple(float(v) for v in json.loads(region))]
-                if len(regions[0]) != 4:
-                    raise ValueError("need 4 numbers")
-            except Exception as ex:  # noqa: BLE001
-                return [f"FAILED | BAD_REGION | region must be JSON [x0,y0,x1,y1] in page points: {ex}"]
-        else:
-            regions, dpi = dp.plan_tiles_auto(rect, dpi)
-        for clip in regions:
-            png, info = dp.render_region(fitz, pg, clip, dpi=dpi)
-            shots.append((png, info))
-        if not region and len(regions) > 1:       # a fitted overview first, so the layout is clear
-            png, info = dp.render_region(fitz, pg, rect, dpi=72)
-            shots.insert(0, (png, dict(info, overview=True)))
-        items, total, truncated = dp.text_layer(pg)
-        meta["images"] = [dict(n=i + 1, **info) for i, (_p, info) in enumerate(shots)]
-        meta["text_layer"] = {"total": total, "shown": len(items), "truncated": truncated,
-                              "items": [f"{w['t']}@{w['x0']},{w['y0']}" for w in items]}
-        meta["note"] = ("Coordinates are PAGE POINTS (72/in, origin top-left, y down). Dimension values come "
-                        "from the text layer when kind is vector/mixed; true size = paper size x the drawing "
-                        "scale printed in the title block.")
-        return [json.dumps(meta, ensure_ascii=False)] + [Image(data=png, format="png") for png, _i in shots]
+        src = dp.open_input(src_path, bridge)
+    except dp.PrepError as ex:
+        return [f"FAILED | {ex.code} | {ex.message}"]
+    try:
+        meta, pngs = dp.prepare_page(src, page, region, dpi, tiles, max_images, text_offset, text_limit)
+        return [json.dumps(meta, ensure_ascii=False)] + [Image(data=png, format="png") for png in pngs]
+    except dp.PrepError as ex:
+        return [f"FAILED | {ex.code} | {ex.message}"]
     except Exception as ex:  # noqa: BLE001
         return [f"FAILED | PREPARE_FAILED | {type(ex).__name__}: {ex}"]
     finally:
-        doc.close()
+        src.close()
 
 
 @mcp.tool(structured_output=False)
@@ -612,11 +644,11 @@ def annotate_regions(file_path: str, marks: str, page: int = 1, region: str = ""
 
     marks: JSON list in PAGE POINTS (the coordinates prepare_drawing's text layer and tiles use), e.g.
         [{"box":[x0,y0,x1,y1],"label":"Ø8 hole"},{"point":[x,y],"label":"datum A"}]
-    page (1-based), region (JSON [x0,y0,x1,y1] in page points; default = the marks plus a margin), dpi: as in
-    prepare_drawing. The file is never modified. Needs PyMuPDF (requirements-pdf.txt)."""
-    src = os.path.abspath(file_path)
-    if not os.path.exists(src):
-        return [f"FAILED | FILE_NOT_FOUND | {src}"]
+    file_path/page/region/dpi: as in prepare_drawing (PDF, image, DXF/DWG/SLDDRW). The file is never modified;
+    the image fits the size and byte caps (meta.image.dpi says what you got). Needs PyMuPDF (requirements-pdf.txt)."""
+    src_path = os.path.abspath(file_path)
+    if not os.path.exists(src_path):
+        return [f"FAILED | FILE_NOT_FOUND | {src_path}"]
     try:
         import drawing_prep as dp
         from mcp.server.mcpserver.utilities.types import Image
@@ -631,21 +663,18 @@ def annotate_regions(file_path: str, marks: str, page: int = 1, region: str = ""
     except Exception as ex:  # noqa: BLE001
         return [f"FAILED | PDF_READER_UNAVAILABLE | {ex}"]
     try:
-        fitz, doc = dp.open_source(src)
-    except Exception as ex:  # noqa: BLE001
-        return [f"FAILED | PDF_READER_UNAVAILABLE | {ex}"]
+        src = dp.open_input(src_path, bridge)
+    except dp.PrepError as ex:
+        return [f"FAILED | {ex.code} | {ex.message}"]
     try:
-        if not 1 <= page <= doc.page_count:
-            return [f"FAILED | BAD_PAGE | {src} has {doc.page_count} page(s); asked for {page}"]
-        png, info, resolved = dp.annotate_region(fitz, doc[page - 1], parsed, clip=clip, dpi=max(30, min(dpi, 600)))
-        meta = {"file": os.path.basename(src), "page": page, "image": info,
-                "marks": [{"label": m["label"], "kind": m["kind"], "page_pt": m["pts"], "px": m["px"]}
-                          for m in resolved]}
+        meta, png = dp.annotate_page(src, parsed, page, clip, dpi)
         return [json.dumps(meta, ensure_ascii=False), Image(data=png, format="png")]
+    except dp.PrepError as ex:
+        return [f"FAILED | {ex.code} | {ex.message}"]
     except Exception as ex:  # noqa: BLE001
         return [f"FAILED | ANNOTATE_FAILED | {type(ex).__name__}: {ex}"]
     finally:
-        doc.close()
+        src.close()
 
 
 @mcp.tool(structured_output=False)
@@ -662,9 +691,16 @@ def verify_against_interpretation(expected: str = "") -> str:
          "holes":[{"diameter_mm":8,"count":4}], "tol_mm":0.1,
          "bolt_circles":[{"center_mm":[0,0,0],"axis":"Z","radius_mm":25,"diameter_mm":6,"count":6}],
          "symmetric":["X","Z"]}  (the last two check DESIGN INTENT: a bolt circle, symmetry about the origin)
+        "profile":[{"view":"front","reference":"<path>","region":[x0,y0,x1,y1],"page":1,"min_iou":0.97}]:
+         silhouette overlap per view (compare_to_reference's pipeline; region = page points).
+        "dimensions":[{"name":"boss height","a":{"face":3},"b":{"face":7},"kind":"distance","value_mm":25,
+         "tol_mm":0.1}]: auto-measured via analyze_model; a/b = {"face":i}|{"edge":i}|{"point":[x,y,z] METERS}
+         (indices from analyze_model faces/edges); kind distance|angle (value_deg, tol_deg)|radius|diameter|
+         length (no b). Put only numbers the drawing TEXT prints in dimensions (never a vision read).
     Measures bbox + mass properties + faces via analyze_model and reports FAIL rows with deltas, WARN for
-    built-but-unlisted holes, and NOT CHECKED for anything it could not measure. cg_mm is the check that
-    catches a mirrored / wrong-face feature (volume stays equal). A PASS covers only what you listed."""
+    built-but-unlisted holes, and NOT CHECKED for anything it could not measure or compare (with the code).
+    cg_mm is the check that catches a mirrored / wrong-face feature (volume stays equal). A PASS covers only
+    what you listed. The result is recorded on the current design step (see design_history)."""
     try:
         given = json.loads(expected) if expected.strip() else {}
         if not isinstance(given, dict):
@@ -706,6 +742,51 @@ def verify_against_interpretation(expected: str = "") -> str:
     except RuntimeError as ex:
         return f"FAILED | MEASURE_FAILED | {ex}"
     try:
-        return provenance + drawing_verify.render(drawing_verify.evaluate(exp, measured))
+        measured["profiles"] = _measure_profiles(exp.get("profile"))
+        measured["dimensions"] = _measure_dimensions(drawing_verify, exp.get("dimensions"))
+        result = drawing_verify.evaluate(exp, measured)
     except (KeyError, TypeError, ValueError) as ex:
         return f"FAILED | BAD_EXPECTED | {type(ex).__name__}: {ex} (see the tool description for the shape)"
+    count = lambda status: sum(1 for r in result["rows"] if r["status"] == status)  # noqa: E731
+    design_core.record_verification(design_core.get(), {
+        "tool": "verify_against_interpretation", "verdict": result["verdict"], "passed": count("PASS"),
+        "failed": count("FAIL"), "warned": count("WARN"), "not_checked": len(result["unchecked"]),
+        "ious": {m["view"]: m["iou"] for m in measured["profiles"] if "iou" in m}})
+    return provenance + drawing_verify.render(result)
+
+
+def _measure_profiles(specs):
+    """Run the compare pipeline per `profile` entry -> drawing_verify's `profiles` measurements."""
+    from drawing_verify import DEFAULT_MIN_IOU
+    from solidpilot.tools.compare_ref import CompareError, compare_view
+    out = []
+    for spec in specs or []:
+        view = str(spec["view"])
+        region = spec.get("region")
+        if region is not None and not (isinstance(region, (list, tuple)) and len(region) == 4):
+            raise ValueError("profile %s: region needs 4 numbers [x0,y0,x1,y1]" % view)
+        try:
+            res, _overlay = compare_view(str(spec["reference"]), view, int(spec.get("page", 1)),
+                                         json.dumps(list(region)) if region else "", localise=False)
+        except CompareError as ex:
+            out.append({"view": view, "error": "%s: %s" % (ex.code, ex.message)})
+            continue
+        out.append({"view": view, "min_iou": float(spec.get("min_iou", DEFAULT_MIN_IOU)),
+                    "iou": res["iou"], "model_only_pct": res["model_only_pct"], "ref_only_pct": res["ref_only_pct"],
+                    "regions": len(res["regions"])})
+    return out
+
+
+def _measure_dimensions(drawing_verify, specs):
+    """Auto-measure each `dimensions` entry via analyze_model(measure) -> drawing_verify's `dimensions`
+    measurements. A failing call (older execution layer, bad index) is reported per entry, not raised."""
+    out = []
+    for spec in specs or []:
+        name = drawing_verify.measure_request(spec)            # ValueError on a malformed entry
+        try:
+            items = _analysis_items(bridge._call_raw("analyze_model", {"analysis_type": "measure", "name": name}))
+            got = json.loads(items[0]) if items else {}
+            out.append({"spec": spec, "got": got if isinstance(got, dict) else {}})
+        except (RuntimeError, ValueError) as ex:
+            out.append({"spec": spec, "error": str(ex)})
+    return out

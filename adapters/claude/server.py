@@ -25,6 +25,7 @@ from solidpilot.tools.drawing_in import *  # noqa: F401,F403
 from solidpilot.tools.clarify import *  # noqa: F401,F403
 from solidpilot.tools.recipes import *  # noqa: F401,F403
 from solidpilot.tools.compare import *  # noqa: F401,F403
+from solidpilot.tools.compare_ref import *  # noqa: F401,F403
 from solidpilot.tools.graph import *  # noqa: F401,F403
 from solidpilot.tools.design import *  # noqa: F401,F403
 from solidpilot.tools.checkpoints import *  # noqa: F401,F403

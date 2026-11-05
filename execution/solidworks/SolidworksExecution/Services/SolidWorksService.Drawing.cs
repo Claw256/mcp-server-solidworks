@@ -42,13 +42,50 @@ namespace SolidworksExecution.Services
                     string templatesDir = System.IO.Path.Combine(
                         System.Environment.GetFolderPath(System.Environment.SpecialFolder.CommonApplicationData),
                         "SolidWorks");
-                    var found = System.IO.Directory.GetFiles(templatesDir, "*.drwdot",
-                        System.IO.SearchOption.AllDirectories);
+                    // A missing/unreadable templates folder is "no template", not an exception.
+                    string[] found = new string[0];
+                    try
+                    {
+                        if (System.IO.Directory.Exists(templatesDir))
+                            found = System.IO.Directory.GetFiles(templatesDir, "*.drwdot",
+                                System.IO.SearchOption.AllDirectories);
+                    }
+                    catch (Exception exT) when (exT is System.IO.IOException || exT is UnauthorizedAccessException)
+                    {
+                        ExecLog.Write($"create_drawing: template search in '{templatesDir}' failed: {exT.Message}");
+                    }
                     if (found.Length == 0)
                         return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
                             "TEMPLATE_NOT_FOUND",
                             "No drawing template (.drwdot) found. Set a default drawing template in SolidWorks → Tools → Options → Default Templates.");
                     templatePath = found[0];
+                }
+
+                // model_path: the model must be OPEN in SolidWorks for add_drawing_view's
+                // CreateDrawViewFromModelView3 to project it. Open it (silent) if it is not already, BEFORE the
+                // new drawing so the drawing is the active document afterwards.
+                bool modelOpened = false;
+                if (!string.IsNullOrEmpty(modelPath))
+                {
+                    if (!System.IO.File.Exists(modelPath))
+                        return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
+                            "FILE_NOT_FOUND", $"No file at '{modelPath}'.");
+                    string modelExt = System.IO.Path.GetExtension(modelPath).ToLowerInvariant();
+                    int modelDocType = modelExt == ".sldprt" ? (int)swDocumentTypes_e.swDocPART
+                        : modelExt == ".sldasm" ? (int)swDocumentTypes_e.swDocASSEMBLY : -1;
+                    if (modelDocType < 0)
+                        return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
+                            "INVALID_PARAMETER", $"model_path must be a .sldprt or .sldasm file (got '{modelExt}').");
+                    if (_solidWorks.GetOpenDocumentByName(modelPath) == null)
+                    {
+                        int openErrors = 0, openWarnings = 0;
+                        var opened = _solidWorks.OpenDoc6(modelPath, modelDocType,
+                            (int)swOpenDocOptions_e.swOpenDocOptions_Silent, "", ref openErrors, ref openWarnings) as IModelDoc2;
+                        if (opened == null)
+                            return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
+                                "OPEN_FAILED", $"Could not open '{modelPath}' (errors={openErrors}, warnings={openWarnings}).");
+                        modelOpened = true;
+                    }
                 }
 
                 // A3 paper (297x420mm), scale 1:1
@@ -73,6 +110,11 @@ namespace SolidworksExecution.Services
                         ActiveSketch = null,
                         Features = new List<string>(),
                         Dimensions = new List<string>()
+                    },
+                    ResultGeometry = string.IsNullOrEmpty(modelPath) ? null : new JObject
+                    {
+                        ["model_path"] = modelPath,
+                        ["model_opened"] = modelOpened
                     },
                     Error = null
                 };
@@ -175,10 +217,12 @@ namespace SolidworksExecution.Services
 
                 // Apply display mode (drafting convention). swDisplayMode_e:
                 //   0=WIREFRAME, 1=HIDDEN_GREYED (Hidden Lines Visible/HLV), 2=HIDDEN (Hidden Lines Removed/HLR),
-                //   3=SHADED, 7=SHADED_EDGES. IView.SetDisplayMode3(UseParent, Mode, Facetted, Edges) — reflection-verified.
+                //   3=SHADED, 7=SHADED_EDGES. IView.SetDisplayMode4(UseParent, Mode, Faceted, Edges, CThreadHighQuality)
+                //   (SetDisplayMode3 is obsolete) — reflection-verified on the 2025 interop.
                 // If display_mode is not given, DEFAULT orthographic views to HLV (drafting rule: show hidden lines
                 // for reference, never dimension them); leave isometric at the document default (shaded/HLR).
                 int? modeToSet = null;
+                string displayModeWarning = null;
                 switch (displayMode)
                 {
                     case "wireframe":                       modeToSet = 0; break;
@@ -202,7 +246,17 @@ namespace SolidworksExecution.Services
                 }
                 if (modeToSet.HasValue)
                 {
-                    try { view.SetDisplayMode3(false, modeToSet.Value, false, false); } catch { /* best-effort; never break the view creation */ }
+                    // The view itself exists either way, so a failed mode change is a warning, not a failure.
+                    try
+                    {
+                        if (!view.SetDisplayMode4(false, modeToSet.Value, false, false, false))
+                            displayModeWarning = $"display_mode '{(displayMode.Length > 0 ? displayMode : "default for " + viewType)}' was not applied (SetDisplayMode4 returned false); the view keeps its previous display style.";
+                    }
+                    catch (Exception exm)
+                    {
+                        displayModeWarning = $"display_mode was not applied: {exm.Message}";
+                    }
+                    if (displayModeWarning != null) ExecLog.Write($"add_drawing_view: {displayModeWarning}");
                 }
 
                 modelDoc.GraphicsRedraw2();
@@ -222,6 +276,7 @@ namespace SolidworksExecution.Services
                         Features = new List<string> { view.Name },
                         Dimensions = new List<string>()
                     },
+                    ResultGeometry = displayModeWarning == null ? null : new JObject { ["warning"] = displayModeWarning },
                     Error = null
                 };
 
@@ -414,39 +469,59 @@ namespace SolidworksExecution.Services
 
                 bool prevInputDimVal = _solidWorks.GetUserPreferenceToggle(
                     (int)swUserPreferenceToggle_e.swInputDimValOnCreate);
-                _solidWorks.SetUserPreferenceToggle(
-                    (int)swUserPreferenceToggle_e.swInputDimValOnCreate, false);
-
-                // Drawing views project the model as EDGE entities (not SKETCHSEGMENT). Try EDGE first,
-                // then SILHOUETTE (curved-body outlines), then SKETCHSEGMENT for sketched drawing geometry.
-                bool selected = modelDoc.Extension.SelectByID2(
-                    "", "EDGE", px.Value, py.Value, 0, false, 0, null, 0);
-                if (!selected)
-                    selected = modelDoc.Extension.SelectByID2(
-                        "", "SILHOUETTE", px.Value, py.Value, 0, false, 0, null, 0);
-                if (!selected)
-                    selected = modelDoc.Extension.SelectByID2(
-                        "", "SKETCHSEGMENT", px.Value, py.Value, 0, false, 0, null, 0);
-
-                if (!selected)
+                IDisplayDimension dim = null;
+                bool selected = false;
+                try
                 {
                     _solidWorks.SetUserPreferenceToggle(
+                        (int)swUserPreferenceToggle_e.swInputDimValOnCreate, false);
+
+                    // Drawing views project the model as EDGE entities (not SKETCHSEGMENT). Try EDGE first,
+                    // then SILHOUETTE (curved-body outlines), then SKETCHSEGMENT for sketched drawing geometry.
+                    selected = modelDoc.Extension.SelectByID2(
+                        "", "EDGE", px.Value, py.Value, 0, false, 0, null, 0);
+                    if (!selected)
+                        selected = modelDoc.Extension.SelectByID2(
+                            "", "SILHOUETTE", px.Value, py.Value, 0, false, 0, null, 0);
+                    if (!selected)
+                        selected = modelDoc.Extension.SelectByID2(
+                            "", "SKETCHSEGMENT", px.Value, py.Value, 0, false, 0, null, 0);
+
+                    if (selected)
+                        dim = modelDoc.AddDimension2(px.Value + labelOffsetX, py.Value + labelOffsetY, 0) as IDisplayDimension;
+                }
+                finally
+                {
+                    // The preference is a user-level toggle: always put it back, whatever happened above.
+                    _solidWorks.SetUserPreferenceToggle(
                         (int)swUserPreferenceToggle_e.swInputDimValOnCreate, prevInputDimVal);
-                    return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
-                        "SEGMENT_NOT_FOUND", $"No drawing edge/segment found at or near ({px.Value}, {py.Value}). Ensure the point lies on a projected model edge in a view.");
                 }
 
-                var dim = modelDoc.AddDimension2(px.Value + labelOffsetX, py.Value + labelOffsetY, 0) as IDisplayDimension;
-                _solidWorks.SetUserPreferenceToggle(
-                    (int)swUserPreferenceToggle_e.swInputDimValOnCreate, prevInputDimVal);
+                if (!selected)
+                    return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
+                        "SEGMENT_NOT_FOUND", $"No drawing edge/segment found at or near ({px.Value}, {py.Value}). Ensure the point lies on a projected model edge in a view.");
 
                 if (dim == null)
                     return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
                         "DIMENSION_CREATION_FAILED", "AddDimension2 returned null in drawing context.");
 
+                // value is in METERS (IDimension.SystemValue is always in system units). Read it back: a drawing
+                // dimension on projected edges is usually a driven/reference dimension whose value SolidWorks
+                // refuses to override, and the old code claimed success regardless.
                 var swDim = dim.GetDimension2(0) as SolidWorks.Interop.sldworks.IDimension;
+                double measured = double.NaN;
+                bool valueApplied = false;
                 if (swDim != null)
-                    swDim.SystemValue = value.Value;
+                {
+                    try { swDim.SystemValue = value.Value; }
+                    catch (Exception exv) { ExecLog.Write($"add_drawing_dimension: setting SystemValue threw {exv.Message}"); }
+                    try { measured = swDim.SystemValue; } catch { }
+                    valueApplied = !double.IsNaN(measured)
+                        && Math.Abs(measured - value.Value) <= Math.Max(1e-6, Math.Abs(value.Value) * 1e-6);
+                }
+                if (!valueApplied)
+                    return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
+                        "DIMENSION_VALUE_NOT_APPLIED", $"The dimension was added but its value could not be set to {value.Value} m (it reads {(double.IsNaN(measured) ? "unknown" : measured.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + " m")}). Drawing dimensions on projected edges are usually driven (measured); the dimension now exists in the drawing at the measured value. Use auto_dimension_drawing for model-driven values, or delete it.");
 
                 var response = new ExecutionResponse
                 {
@@ -2282,6 +2357,7 @@ namespace SolidworksExecution.Services
                 bool allViews = p?.Value<bool?>("all_views") ?? true;
                 bool includeUnmarked = p?.Value<bool?>("include_unmarked") ?? false;
                 bool eliminateDuplicates = p?.Value<bool?>("eliminate_duplicates") ?? true;
+                string viewName = p?.Value<string>("view_name");
 
                 var modelDoc = _solidWorks.IActiveDoc2 as IModelDoc2;
                 if (modelDoc == null)
@@ -2298,15 +2374,51 @@ namespace SolidworksExecution.Services
                 //   Types  = swInsertAnnotation_e bitmask: swInsertDimensionsMarkedForDrawing (32768),
                 //            optionally | swInsertDimensionsNotMarkedForDrawing (524288) for ALL driving dims
                 //   AllViews, DuplicateDims, HiddenFeatureDims(false), UsePlacementInSketch(true)
+                // DuplicateDims is documented as "True to eliminate duplicate dimensions" (despite the name), so
+                // eliminate_duplicates maps straight onto it.
                 int option = 0;
                 int types = 32768;
                 if (includeUnmarked) types |= 524288;
-                bool duplicateDims = !eliminateDuplicates;
+                bool duplicateDims = eliminateDuplicates;
 
                 modelDoc.ClearSelection2(true);
 
-                object inserted = drawingDoc.InsertModelAnnotations3(
-                    option, types, allViews, duplicateDims, false, true);
+                // AllViews=false inserts into the SELECTED view only, so select one: view_name, else the active view.
+                string previousActiveView = null;
+                string selectedView = null;
+                if (!allViews)
+                {
+                    try { var av = drawingDoc.ActiveDrawingView as IView; if (av != null) previousActiveView = av.Name; } catch { }
+                    selectedView = !string.IsNullOrEmpty(viewName) ? viewName : previousActiveView;
+                    if (string.IsNullOrEmpty(selectedView))
+                        return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
+                            "INVALID_PARAMETER", "all_views=false needs a target view: pass view_name (e.g. 'Drawing View1'), or activate a view first.");
+                    bool viewSelected = false;
+                    try
+                    {
+                        drawingDoc.ActivateView(selectedView);
+                        modelDoc.ClearSelection2(true);
+                        viewSelected = modelDoc.Extension.SelectByID2(selectedView, "DRAWINGVIEW", 0, 0, 0, false, 0, null, 0);
+                    }
+                    catch (Exception exs) { ExecLog.Write($"auto_dimension_drawing: selecting view '{selectedView}' threw {exs.Message}"); }
+                    if (!viewSelected)
+                        return BuildFailed(request.OperationId, _guard.GetCurrentStateVersion(),
+                            "ENTITY_NOT_FOUND", $"Drawing view '{selectedView}' could not be selected. Use the exact view name from analyze_drawing.");
+                }
+
+                object inserted;
+                try
+                {
+                    inserted = drawingDoc.InsertModelAnnotations3(
+                        option, types, allViews, duplicateDims, false, true);
+                }
+                finally
+                {
+                    // Leave the drawing as found: no leftover selection, and the previously active view active again.
+                    try { modelDoc.ClearSelection2(true); } catch { }
+                    if (!string.IsNullOrEmpty(previousActiveView) && previousActiveView != selectedView)
+                        try { drawingDoc.ActivateView(previousActiveView); } catch { }
+                }
 
                 modelDoc.GraphicsRedraw2();
 
@@ -2336,6 +2448,7 @@ namespace SolidworksExecution.Services
                     {
                         ["inserted_count"] = insertedCount,
                         ["all_views"] = allViews,
+                        ["view_name"] = selectedView,
                         ["include_unmarked"] = includeUnmarked
                     },
                     Error = null
@@ -2396,7 +2509,23 @@ namespace SolidworksExecution.Services
                 // swAutoInsertCenterMarkTypes_e bitmask (inlined ints, ADR-018): Hole=1, Slots=4.
                 int insertType = 1;
                 if (includeSlots) insertType |= 4;
-                int insertOption = 2; // swCenterMarkStyle_e.swCenterMark_Single
+                // InsertOption is swCenterMarkConnectionLine_e (0 = no connection lines, 1 linear, 2 circular) -
+                // NOT a style enum; no connection lines is what this tool means by a plain center mark.
+                int insertOption = 0;
+                // UseDocumentDefaults=false so ExtendedLines is honoured; size/gap/centerline font are read from the
+                // document's Centerlines/Center Marks settings so the look still follows the drawing's standard.
+                double markSize = 0.0025, markGap = 0.0;
+                bool centerLineFont = true;
+                try
+                {
+                    var ext = modelDoc.Extension;
+                    int noOption = (int)swUserPreferenceOption_e.swDetailingNoOptionSpecified;
+                    double sz = ext.GetUserPreferenceDouble((int)swUserPreferenceDoubleValue_e.swDetailingCenterMarkSize, noOption);
+                    if (sz > 0) markSize = sz;
+                    markGap = ext.GetUserPreferenceDouble((int)swUserPreferenceDoubleValue_e.swDetailingCenterMarkGap, noOption);
+                    centerLineFont = ext.GetUserPreferenceToggle((int)swUserPreferenceToggle_e.swDetailingCenterMarkUseCenterLine, noOption);
+                }
+                catch (Exception exp) { ExecLog.Write($"auto_center_marks: reading document center-mark settings failed ({exp.Message}); using built-in size/gap"); }
 
                 int viewsProcessed = 0;
                 int viewsMarked = 0;
@@ -2421,11 +2550,11 @@ namespace SolidworksExecution.Services
                             {
                                 // AutoInsertCenterMarks2(InsertType, InsertOption, LinearSlotCenter,
                                 //   ArcSlotCenter, UseDocumentDefaults, Size, Gap, ExtendedLines,
-                                //   CenterLineFont, Angle). UseDocumentDefaults=true → SW's own center-mark
-                                //   size/style (robust); the explicit args are then ignored by SW.
+                                //   CenterLineFont, Angle). ExtendedLines and the size/gap/font args are only
+                                //   honoured when UseDocumentDefaults is false (docs), hence false here.
                                 ok = view.AutoInsertCenterMarks2(insertType, insertOption,
-                                    includeSlots, includeSlots, true, 0.0025, 0.0,
-                                    extendedLines, true, 0.0);
+                                    includeSlots, includeSlots, false, markSize, markGap,
+                                    extendedLines, centerLineFont, 0.0);
                                 viewsProcessed++;
                             }
                             catch (Exception exv) { ExecLog.Write($"auto_center_marks: view '{view.Name}' threw {exv.Message}"); }

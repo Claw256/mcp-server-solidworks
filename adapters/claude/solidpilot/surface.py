@@ -19,7 +19,7 @@ Read get_recipe('reverse') / get_recipe('forward') before writing a Feature Grap
 # Tools that neither change the model/file system nor the active document.
 READ_ONLY = frozenset({
     "verify_state", "analyze_assembly", "analyze_model", "analyze_slddrw_test", "get_selection", "get_recipe",
-    "prepare_drawing", "annotate_regions", "verify_against_interpretation", "ask_user", "design_history",
+    "prepare_drawing", "annotate_regions", "verify_against_interpretation", "compare_to_reference", "ask_user", "design_history",
 })
 # Tools that can discard work (an unsaved close, a feature delete/suppress).
 DESTRUCTIVE = frozenset({"close_document", "edit_feature", "design_step", "design_undo", "design_redo"})

@@ -7,8 +7,8 @@
   "sheet_metal": {
     "k_factor": 0.5,
     "_k_factor": "Neutral-axis factor used when converting bent-state dimensions to a flat blank and back. 0.5 = the SolidWorks default, VERIFIED on s-1 and s-2 to 6 decimals. If a drawing's own flat pattern disagrees with the arithmetic, the reader FLAGS it (k_factor_mismatch) rather than silently re-deriving.",
-    "bend_note_pattern": "^(UP|DOWN)\\s+([0-9.]+)\\s*(?:°|deg)?\\s*R\\s*([0-9.]+)$",
-    "_bend_note_pattern": "Flat-pattern bend annotation. Locale is NOT translated by SolidWorks (user-confirmed: always UP/DOWN).",
+    "bend_note_pattern": "^(UP|DOWN)\\s+([0-9.,]+)\\s*(?:°|deg)?\\s*R\\s*([0-9.,]+)$",
+    "_bend_note_pattern": "Flat-pattern bend annotation. Locale is NOT translated by SolidWorks (user-confirmed: always UP/DOWN). The NUMBERS may use a comma decimal ('UP 90 R 1,5'); dxf_read normalises it.",
     "bend_class_map": {"UP": "visible", "DOWN": "hidden"},
     "_bend_class_map": "Which EDGE CLASS a bend line of each direction is drawn with. SolidWorks views the flat pattern from one side, so a bend folding away is an obscured edge. This is the second, independent channel that identifies WHICH line a note annotates (recipe R10) — stated here rather than hardcoded because it is a drafting convention, not a law.",
     "bend_flip_map": {"UP": false, "DOWN": true},

@@ -1,0 +1,8 @@
+# OPTIONAL: silhouette comparison of the built model against a reference view for the `compare_to_reference`
+# tool. Without Pillow/numpy the tool answers FAILED | COMPARE_UNAVAILABLE and everything else works unchanged.
+# PDF references additionally need requirements-pdf.txt. scipy is optional (a pure-numpy fallback is used for
+# hole filling, opening and connected-component labelling, just slower on large captures).
+# All are imported lazily and never bundled.
+Pillow>=10.0
+numpy>=1.26,<3
+scipy>=1.11,<2

@@ -79,17 +79,20 @@ def _ezdxf_recover():
     return recover
 
 try:                             # normal: imported as part of the `drawing` package
-    from . import callouts, contour, curvefit, pairing, viewgraph
-    from .vocab import INSUNITS_MM
+    from . import callouts, contour, curvefit, dxf_entities, pairing, viewgraph
+    from .vocab import HEAVY_LINEWEIGHT, INSUNITS_MM, LINETYPE_CLASSES
 except ImportError:              # fallback: run directly as a script from this directory
     import callouts
     import contour
     import curvefit
+    import dxf_entities
     import pairing
     import viewgraph
-    from vocab import INSUNITS_MM
+    from vocab import HEAVY_LINEWEIGHT, INSUNITS_MM, LINETYPE_CLASSES
 
-ANALYSIS_VERSION = "0.7.0"   # 0.7.0: the WIRE form (payload phase 1). Everything the model or the
+ANALYSIS_VERSION = "0.7.0"   # (hardening pass, additive keys only -- see sheet.advisories; no bump: every
+                             #  frozen golden is byte-identical for SolidWorks-exported input)
+                             # 0.7.0: the WIRE form (payload phase 1). Everything the model or the
                              #        saved artifact carries goes through `wire.encode`, while the
                              #        pipeline keeps the record shape it always had -- one boundary,
                              #        no consumer touched. `lines` become {class: [[index, x1, y1,
@@ -162,7 +165,8 @@ def _r(v, nd=3):
 
 # Entity classes the reader consumes. Everything else it sees is COUNTED in sheet.not_read.
 _READ_TYPES = frozenset(("LINE", "ARC", "CIRCLE", "ELLIPSE", "DIMENSION", "MTEXT", "TEXT",
-                         "INSERT", "VIEWPORT", "MULTILEADER"))
+                         "INSERT", "VIEWPORT", "MULTILEADER", "TOLERANCE",
+                         "LWPOLYLINE", "POLYLINE", "SPLINE"))   # the last three are EXPLODED (dxf_entities)
 
 
 def _text_of(e):
@@ -256,7 +260,27 @@ def edge_class(doc, e):
         return "cut_line"
     if u.startswith("CENTER"):
         return "center"
+    if u.startswith("ISO"):                       # 'ISO02W100' and 'ACAD_ISO02W100' are one name
+        u = "ACAD_" + u
+    for prefix, cls, heavy in LINETYPE_CLASSES:   # the table + its rationale live in vocab.py
+        if u.startswith(prefix):
+            if heavy:
+                lw = _lineweight(doc, e)
+                if lw is not None and lw >= HEAVY_LINEWEIGHT:
+                    return heavy
+            return cls
     return "visible"
+
+
+def _lineweight(doc, e):
+    """Resolved lineweight in 1/100 mm (BYLAYER through the layer), or None when none is set."""
+    try:
+        lw = int(e.dxf.get("lineweight", -1))
+        if lw < 0:
+            lw = int(doc.layers.get(e.dxf.layer).dxf.get("lineweight", -3))
+        return lw if lw >= 0 else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def bbox(e):
@@ -424,8 +448,16 @@ def geom_bbox(doc, items):
     return None
 
 
+_GRID_BIG_CELLS = 48     # a box spanning more cells than this on an axis is tested against everything
+
+
 def cluster(items, gap):
-    """Union-find on bbox proximity -> connected groups of primitives."""
+    """Union-find on bbox proximity -> connected groups of primitives.
+
+    Candidate pairs come from a SPATIAL GRID (cell ~ the median primitive size) instead of all n^2
+    pairs; the connectivity predicate is the same one, so the groups -- and their order, which fixes
+    every emitted index -- are identical. A very large box (the sheet border) is tested against all
+    earlier items directly, so a coarse cell never loses a pair."""
     par = list(range(len(items)))
 
     def find(a):
@@ -434,24 +466,77 @@ def cluster(items, gap):
             a = par[a]
         return a
 
-    for i in range(len(items)):
-        for j in range(i + 1, len(items)):
-            a, b = items[i][1], items[j][1]
-            if a[0] <= b[2] + gap and b[0] <= a[2] + gap and a[1] <= b[3] + gap and b[1] <= a[3] + gap:
-                ra, rb = find(i), find(j)
-                if ra != rb:
-                    par[ra] = rb
+    def touch(i, j):
+        a, b = items[i][1], items[j][1]
+        if a[0] <= b[2] + gap and b[0] <= a[2] + gap and a[1] <= b[3] + gap and b[1] <= a[3] + gap:
+            ra, rb = find(i), find(j)
+            if ra != rb:
+                par[ra] = rb
+
+    n = len(items)
+    if n > 1:
+        sizes = sorted(max(it[1][2] - it[1][0], it[1][3] - it[1][1]) for it in items)
+        cell = max(sizes[n // 2], 4.0 * gap, 1e-6)
+        grid, big = {}, []
+        for i in range(n):
+            b = items[i][1]
+            if (b[2] - b[0]) / cell > _GRID_BIG_CELLS or (b[3] - b[1]) / cell > _GRID_BIG_CELLS:
+                for j in range(i):
+                    touch(i, j)
+                big.append(i)
+                continue
+            x0, x1 = int(math.floor((b[0] - gap) / cell)), int(math.floor((b[2] + gap) / cell))
+            y0, y1 = int(math.floor((b[1] - gap) / cell)), int(math.floor((b[3] + gap) / cell))
+            seen = set(big)
+            for cx in range(x0, x1 + 1):
+                for cy in range(y0, y1 + 1):
+                    seen.update(grid.get((cx, cy), ()))
+            for j in seen:
+                touch(i, j)
+            rx0, rx1 = int(math.floor(b[0] / cell)), int(math.floor(b[2] / cell))
+            ry0, ry1 = int(math.floor(b[1] / cell)), int(math.floor(b[3] / cell))
+            for cx in range(rx0, rx1 + 1):
+                for cy in range(ry0, ry1 + 1):
+                    grid.setdefault((cx, cy), []).append(i)
     groups = {}
     for i, it in enumerate(items):
         groups.setdefault(find(i), []).append(it)
     return list(groups.values())
 
 
+# Standard sheet sizes (long x short) -- a frame matching one of these reveals the drawing's unit.
+_PAPER_MM = {"A4": (297, 210), "A3": (420, 297), "A2": (594, 420), "A1": (841, 594), "A0": (1189, 841)}
+_PAPER_IN = {"ANSI A": (11, 8.5), "ANSI B": (17, 11), "ANSI C": (22, 17), "ANSI D": (34, 22),
+             "ANSI E": (44, 34), "ARCH A": (12, 9), "ARCH B": (18, 12), "ARCH C": (24, 18),
+             "ARCH D": (36, 24), "ARCH E": (48, 36), "ARCH E1": (42, 30)}
+
+
+def _units_hint(w, h, measurement, has_frame):
+    """Evidence for the unit of an UNITLESS ($INSUNITS 0) drawing -> {"unit": "inch"|"mm", "basis": str} or None.
+    HINT ONLY: the reader never converts on it. Evidence, strongest first: the sheet frame matches a
+    standard paper size in one unit (the frame is inset, so 80-102 % of the paper counts); then
+    $MEASUREMENT (0 = imperial, 1 = metric)."""
+    long_, short = max(w, h), min(w, h)
+    if has_frame and short > 0:
+        for unit, table in (("mm", _PAPER_MM), ("inch", _PAPER_IN)):
+            hit = [n for n, (L, S) in table.items()
+                   if 0.80 * L <= long_ <= 1.02 * L and 0.80 * S <= short <= 1.02 * S]
+            if hit:
+                return {"unit": unit, "basis": "the sheet frame is %g x %g, which fits %s in %s"
+                                               % (round(long_, 2), round(short, 2), hit[0], unit)}
+    if measurement in (0, 1):
+        return {"unit": "inch" if measurement == 0 else "mm",
+                "basis": "$MEASUREMENT=%d (%s)" % (measurement, "imperial" if measurement == 0 else "metric")}
+    return None
+
+
 # --------------------------------------------------------------------------- main read
 def read(path, cfg, layout=""):
     """Read a DXF file -> the draw dialect. (DWG/SLDDRW arrive here as a converted DXF; a vector PDF
     is rebuilt as an in-memory DXF by pdf_read and goes through `read_doc` directly.)
-    `layout`: read ONE named layout ('' = every layout merged -- the historic behaviour)."""
+    `layout`: read ONE named layout. '' = AUTO: the layout that has content (Model first) -- when
+    several do, only one is read and sheet.advisories says which were ignored, because merging model
+    and paper space double counts. '*' merges every layout deliberately (the old default)."""
     doc, auditor = _ezdxf_recover().readfile(path)
     return read_doc(doc, auditor, path, cfg, layout=layout)
 
@@ -470,20 +555,46 @@ def read_doc(doc, auditor, path, cfg, source_kind="dxf", layout=""):
             dimlfac[ds.dxf.name] = 1.0
     used = [v for k, v in dimlfac.items() if k.upper().startswith("SLD")] or [1.0]
     sheet_scale = used[0]
+    # A file with no SolidWorks (SLD*) dimstyle is FOREIGN: AutoCAD / BricsCAD / LibreCAD. Only for those
+    # are the extra behaviours below on (block geometry read, DIMLFAC taken from the style each
+    # dimension actually uses); a SolidWorks export keeps the exact historic path.
+    foreign = not any(k.upper().startswith("SLD") for k in dimlfac)
+    advisories = []
+
+    def advise(code, text):
+        advisories.append({"code": code, "text": text})
 
     # ---- entities across ALL layouts (a DWG->DXF conversion puts them in paperspace) ---
     ents = []
     layout_info = []
     names = [lo.name for lo in doc.layouts]
-    if layout and layout.lower() not in [n.lower() for n in names]:
+    merge_all = layout in ("*", "all")
+    if layout and not merge_all and layout.lower() not in [n.lower() for n in names]:
         raise ValueError("no layout named %r — this file has: %s" % (layout, ", ".join(names)))
+    with_content = [lo.name for lo in doc.layouts if any(e.dxftype() != "VIEWPORT" for e in lo)]
+    select, layout_auto = ("" if merge_all else layout), None
+    if not layout and len(with_content) > 1:
+        # Model + paper space both drawn: reading both overlays two coordinate spaces (the part at true
+        # size, the same part again at sheet size). Read ONE, say which, never guess silently.
+        pick = next((n for n in with_content if n.lower() == "model"), with_content[0])
+        select = pick
+        layout_auto = {"chosen": pick, "ignored": [n for n in with_content if n != pick]}
+        advise("LAYOUT_AUTO", "layouts %s all have content; ONLY '%s' was read (merging model and paper space "
+                              "double counts the part). Pass layout='<name>' to read another, or layout='*' to "
+                              "merge them deliberately." % (", ".join(with_content), pick))
+    elif merge_all and len(with_content) > 1:
+        advise("LAYOUT_MERGED", "layout='*': layouts %s were MERGED into one coordinate space; frames, views "
+                                "and the title block will not make sense unless they were meant to overlay."
+                                % ", ".join(with_content))
+    in_paper = {}
     for lo in doc.layouts:
         n_ents = sum(1 for e in lo if e.dxftype() != "VIEWPORT")
         layout_info.append({"name": lo.name, "entities": n_ents})
-        if layout and lo.name.lower() != layout.lower():
+        if select and lo.name.lower() != select.lower():
             continue
         for e in lo:
             ents.append(e)
+            in_paper[id(e)] = not lo.is_modelspace
 
     # ---- UNITS: convert at the DOCUMENT, once, so every heuristic below (cluster gap, frame/title
     #      block rules, 3-decimal rounding) sees TRUE mm. $INSUNITS says what one drawing unit is;
@@ -509,24 +620,94 @@ def read_doc(doc, auditor, path, cfg, source_kind="dxf", layout=""):
                 pass
         unit_k = native_mm
 
-    # ---- what is NOT read, counted so it cannot vanish silently: HATCH/SOLID (fills), OLE2FRAME
-    #      (an embedded logo), and GEOMETRY inside blocks (centre-mark crosses, hatch-as-lines,
-    #      a rolling-direction symbol). Block TEXT is read (see `texts` below); the VIEWPORT is
-    #      the paper-space window, not drawing content.
+    # ---- NORMALISE (dxf_entities): LWPOLYLINE / POLYLINE / SPLINE are exploded into LINE + ARC, an
+    #      ARC/CIRCLE with a non-default extrusion (a mirrored arc) is moved to WCS, and -- for a
+    #      FOREIGN file only -- the geometry and DIMENSIONs inside INSERT blocks are read too (AutoCAD
+    #      drawings routinely put the title block, even the whole part, in a block). A SolidWorks export
+    #      keeps counting its block geometry in not_read: it is centre marks and symbols there.
     not_read, block_geom = Counter(), Counter()
+    block_unread, blocks_read = Counter(), Counter()
+    norm = []
+    for e in ents:
+        t = e.dxftype()
+        if t == "VIEWPORT":
+            norm.append(e)
+            continue
+        if t == "INSERT":
+            norm.append(e)
+            if foreign and in_paper.get(id(e)) is not None:
+                for ve in dxf_entities.block_entities(e):
+                    vt = ve.dxftype()
+                    if vt in ("MTEXT", "TEXT", "ATTRIB", "ATTDEF", "VIEWPORT", "TOLERANCE"):
+                        continue
+                    if vt == "DIMENSION":
+                        norm.append(ve)
+                        in_paper[id(ve)] = in_paper.get(id(e), False)
+                    elif vt in dxf_entities.NATIVE or vt in dxf_entities.POLY:
+                        parts, why = dxf_entities.normalise(ve)
+                        norm.extend(parts)
+                        if why:
+                            block_unread[why] += 1
+                        elif parts:
+                            blocks_read[e.dxf.name or "?"] += 1
+                    else:
+                        block_unread[vt] += 1
+            continue
+        parts, why = dxf_entities.normalise(e)
+        norm.extend(parts)
+        if why:
+            not_read[why] += 1
+        for p in parts:
+            in_paper[id(p)] = in_paper.get(id(e), False)
+    ents = norm
+
+    # ---- what is NOT read, counted so it cannot vanish silently: HATCH/SOLID (fills), OLE2FRAME
+    #      (an embedded logo), IMAGE/WIPEOUT, and GEOMETRY inside blocks (centre-mark crosses,
+    #      hatch-as-lines, a rolling-direction symbol; a foreign file's blocks are READ instead). Block
+    #      TEXT is read (see `texts` below); the VIEWPORT is the paper-space window, not drawing content.
     for e in ents:
         t = e.dxftype()
         if t == "INSERT":
             name = e.dxf.name or ""
-            if _block_has_geometry(e):
+            if not foreign and _block_has_geometry(e):
                 block_geom[re.sub(r"[_\d]+$", "", name) or name] += 1
         elif t not in _READ_TYPES:
             not_read[t] += 1
+    if blocks_read:
+        advise("BLOCK_GEOMETRY_READ", "geometry/dimensions inside INSERT blocks were READ (%s) because this is "
+                                      "not a SolidWorks export; their text rows are in notes as always."
+                                      % ", ".join("%s x%d" % kv for kv in sorted(blocks_read.items())))
+
+    # ---- DIMLFAC of a FOREIGN file: from the dimstyle each dimension ACTUALLY uses (plus a per-dimension
+    #      override), not the first SLD* style. A negative DIMLFAC means "apply |value| in PAPER space
+    #      only" -- a model-space dimension ignores it. The most common effective factor is the sheet's
+    #      (it scales the geometry the same way, so geometry and dimensions stay mutually consistent).
+    def dim_eff(e):
+        v = dimlfac.get(getattr(e.dxf, "dimstyle", ""), 1.0)
+        try:
+            from ezdxf.entities import DimStyleOverride
+            v = float(DimStyleOverride(e).get("dimlfac", v) or v)
+        except Exception:  # noqa: BLE001
+            pass
+        if v < 0:
+            v = -v if in_paper.get(id(e), False) else 1.0
+        return v or 1.0
+
+    if foreign:
+        eff = Counter(round(dim_eff(e), 9) for e in ents if e.dxftype() == "DIMENSION")
+        if eff:
+            sheet_scale = eff.most_common(1)[0][0]
+            if len(eff) > 1:
+                advise("DIMLFAC_MIXED", "dimensions use dimstyles with different DIMLFAC (%s); each dimension was "
+                                        "scaled by ITS style's factor, geometry by the most common (%g)."
+                                        % (", ".join("%g x%d" % kv for kv in sorted(eff.items())), sheet_scale))
 
     # ---- every piece of TEXT on the sheet: top-level MTEXT/TEXT plus each ROW inside a note
     #      block (rotation = the block's). One list, so the scale-label pass and the notes pass
     #      cannot disagree about what text exists.
     texts = []
+    meta = {}                # index into `texts` -> extra facts: tag (ATTRIB), fcf, leader (target points)
+    title_fields = {}        # ATTRIB tag -> value (a title block built from attributes)
     for e in ents:
         t = e.dxftype()
         if t in ("MTEXT", "TEXT"):
@@ -536,12 +717,34 @@ def read_doc(doc, auditor, path, cfg, source_kind="dxf", layout=""):
             rot = getattr(e.dxf, "rotation", 0.0) or 0.0
             for row, x, y in _block_rows(e):
                 texts.append((row, x, y, rot))
+            for a in (getattr(e, "attribs", None) or []):      # ATTRIB: title-block FIELDS (tag = value)
+                try:
+                    v = re.sub(r"\s+", " ", a.dxf.text or "").strip()
+                    if v:
+                        meta[len(texts)] = {"tag": a.dxf.tag}
+                        texts.append((v, a.dxf.insert.x, a.dxf.insert.y, getattr(a.dxf, "rotation", 0.0) or 0.0))
+                        title_fields.setdefault(a.dxf.tag, v)
+                except Exception:  # noqa: BLE001
+                    pass
+        elif t == "TOLERANCE":
+            # A feature control frame. Its gdt-font symbols stay as [gdt:x] codes (see callouts.fcf_text).
+            try:
+                s = callouts.fcf_text(e.dxf.get("content", ""))
+                if s:
+                    meta[len(texts)] = {"fcf": True}
+                    texts.append(("FCF " + s, e.dxf.insert.x, e.dxf.insert.y, 0.0))
+            except Exception:  # noqa: BLE001
+                pass
         elif t == "MULTILEADER":
             # A leader NOTE ("4X M6 THRU") is where hole callouts live; before this they were counted
             # in not_read and never reached the model.
             try:
                 mt = e.context.mtext
                 if mt is not None and mt.default_content:
+                    pts = [(float(v[0]), float(v[1])) for ld in e.context.leaders for ln in ld.lines
+                           for v in ln.vertices]
+                    if pts:
+                        meta[len(texts)] = {"leader": pts}
                     texts.append((mt.default_content, float(mt.insert[0]), float(mt.insert[1]), 0.0))
             except Exception:  # noqa: BLE001 -- a malformed leader must not sink the read
                 pass
@@ -651,15 +854,13 @@ def read_doc(doc, auditor, path, cfg, source_kind="dxf", layout=""):
     for v in views:
         v["scale"] = sheet_scale
     for raw, px, py, _rot in texts:
-        m = _SCALE_RE.search(raw.replace("\n", " "))
-        if not m:
+        ab = callouts.parse_scale(raw)            # '1 : 2', 'M 2:1', 'SCALE 1/2', 'HALF SCALE' ...
+        if ab is None:
             continue
         if (title_block_top is not None
                 and py <= title_block_top and px >= title_block_left):
             continue
-        a, b = (float(m.group(i).replace(",", ".")) for i in (1, 2))
-        if not (a > 0 and b > 0):
-            continue
+        a, b = ab
         best, bd = None, 0.1 * sheet_h
         for v in views:
             bx = v["box"]
@@ -668,6 +869,16 @@ def read_doc(doc, auditor, path, cfg, source_kind="dxf", layout=""):
             dist = bx[1] - py if py < bx[1] else py - bx[3] if py > bx[3] else 0.0
             if dist < bd:
                 best, bd = v, dist
+        if best is None:
+            # A label BESIDE a view (level with it, just off its left/right edge) rather than under it.
+            bd = 0.05 * max(sheet_w, sheet_h)
+            for v in views:
+                bx = v["box"]
+                if not bx[1] <= py <= bx[3]:
+                    continue
+                dx = bx[0] - px if px < bx[0] else px - bx[2] if px > bx[2] else None
+                if dx is not None and dx < bd:
+                    best, bd = v, dx
         if best is not None:
             best["scale"] = b / a
 
@@ -827,7 +1038,11 @@ def read_doc(doc, auditor, path, cfg, source_kind="dxf", layout=""):
         # The OWNING VIEW's scale wins over the dimstyle's DIMLFAC: s-7 puts every dimension,
         # including the 1:1 section's, on a dimstyle carrying the sheet's factor of 10.
         owner = which_view(pts[-1][0], pts[-1][1]) if pts else None
-        f = view_scale.get(owner) or dimlfac.get(getattr(e.dxf, "dimstyle", ""), 1.0)
+        if foreign:
+            vs_o = view_scale.get(owner)
+            f = vs_o if (vs_o is not None and vs_o != sheet_scale) else dim_eff(e)   # a view LABEL wins
+        else:
+            f = view_scale.get(owner) or dimlfac.get(getattr(e.dxf, "dimstyle", ""), 1.0)
         # DIMLFAC is a LENGTH factor. An ANGULAR dimension is dimensionless and must never be
         # scaled by it — s-7 is a 1:10 sheet and reported 2250 for a 225 deg angle.
         value = _r(raw if kind in ("angular", "angular3p") else raw * f)
@@ -858,7 +1073,12 @@ def read_doc(doc, auditor, path, cfg, source_kind="dxf", layout=""):
         # For a linear dim the computed value stays (it carries more decimals than the printed
         # rounding), but a disagreement beyond rounding is REPORTED, never swallowed.
         printed = printed_text(doc, e)
-        pv = printed_value(printed)
+        # A COUNT PREFIX ('4X \u00d88', '2X R5') is not the value: strip it for the printed number, record it
+        # as `count`, and (where the geometry gave the value) keep the geometry-derived value.
+        count, pv_src = callouts.split_count(printed) if printed else (None, printed)
+        if count is None and override not in ("<>", ""):
+            count = callouts.split_count(override)[0]
+        pv = printed_value(pv_src)
         if pv is not None and unit_k != 1.0 and kind not in ("angular", "angular3p"):
             pv = pv * unit_k                       # printed in the DRAWING's unit -> mm
         mismatch = False
@@ -868,7 +1088,8 @@ def read_doc(doc, auditor, path, cfg, source_kind="dxf", layout=""):
                 value = _r(value)
             elif kind in ("radius", "diameter"):
                 mismatch = value is not None and abs(value - pv) > max(0.01, 0.01 * abs(pv))
-                value = _r(pv)
+                if not (count and measures):
+                    value = _r(pv)
             elif value is not None:
                 mismatch = abs(value - pv) > max(0.05, 0.01 * abs(pv))
         d = {"value": value, "kind": "diameter" if faked_diameter else kind, "defpts": pts}
@@ -876,6 +1097,8 @@ def read_doc(doc, auditor, path, cfg, source_kind="dxf", layout=""):
             d["kind_from"] = "printed"     # the ENTITY said linear; the printed symbol overruled it
         if printed:
             d["printed"] = printed
+        if count:
+            d["count"] = count
         if mismatch:
             d["printed_mismatch"] = True
         if measures:
@@ -896,7 +1119,19 @@ def read_doc(doc, auditor, path, cfg, source_kind="dxf", layout=""):
         def __init__(self, x, y):
             self.x, self.y = x, y
 
-    for txt, px, py, rot in texts:
+    def leader_target(ti, px, py):
+        """MULTILEADER leader tip -> the nearest circle/arc it lands on (centre or rim), within tolerance.
+        Records the LINK only; no value is changed."""
+        best, bs = None, 1e9
+        for lx, ly in (meta.get(ti) or {}).get("leader", ()):
+            for (ax, ay, ar, aid) in round_prims:
+                dd = math.hypot(ax - lx, ay - ly)
+                sc = min(dd, abs(dd - ar))
+                if sc < bs and sc <= max(0.5, 0.05 * ar):
+                    bs, best = sc, aid
+        return best
+
+    for ti, (txt, px, py, rot) in enumerate(texts):
         t = re.sub(r"\s+", " ", txt.replace("\n", " ")).strip()
         p = _P(px, py)
         if not t:
@@ -912,13 +1147,21 @@ def read_doc(doc, auditor, path, cfg, source_kind="dxf", layout=""):
             or p.x < fb[0] + 0.03 * sheet_w or p.x > fb[2] - 0.03 * sheet_w)
         m = bend_re.match(t.replace("°", " ").replace("  ", " ").strip()) or bend_re.match(t)
         if m:
-            bends.append({"dir": m.group(1).upper(), "angle_deg": float(m.group(2)),
-                          "radius": float(m.group(3)), "rot": _r(rot, 2),
+            bends.append({"dir": m.group(1).upper(), "angle_deg": float(m.group(2).replace(",", ".")),
+                          "radius": float(m.group(3).replace(",", ".")), "rot": _r(rot, 2),
                           "at": [_r(p.x, 2), _r(p.y, 2)], "view": which_view(p.x, p.y)})
-        elif not in_frame:
-            notes.append({"text": t, "at": [_r(p.x, 2), _r(p.y, 2)], "view": which_view(p.x, p.y)})
         else:
-            frame_notes.append({"text": t, "at": [_r(p.x, 2), _r(p.y, 2)]})
+            entry = ({"text": t, "at": [_r(p.x, 2), _r(p.y, 2)], "view": which_view(p.x, p.y)} if not in_frame
+                     else {"text": t, "at": [_r(p.x, 2), _r(p.y, 2)]})
+            mt_ = meta.get(ti) or {}
+            if "tag" in mt_:
+                entry["tag"] = mt_["tag"]
+            if mt_.get("fcf"):
+                entry["fcf"] = True
+            tgt = leader_target(ti, px, py) if "leader" in mt_ else None
+            if tgt:
+                entry["target"] = tgt
+            (frame_notes if in_frame else notes).append(entry)
     # Reading order (top row first, left to right): a title block is a TABLE, and its rows are what
     # pair a label with its value -- 'Länge' at x=78.73 with '338' at x=78.57 one row below.
     frame_notes.sort(key=lambda n: (-n["at"][1], n["at"][0]))
@@ -928,11 +1171,14 @@ def read_doc(doc, auditor, path, cfg, source_kind="dxf", layout=""):
     # ---- structured meaning of the TEXT (callouts.py): hole callouts, dimension tolerances, projection.
     #      Additive: `notes` stay exactly as read; these are PROPOSALS parsed from them.
     hole_callouts = []
-    for txt, px, py, _rot in texts:
+    for ti, (txt, px, py, _rot) in enumerate(texts):
         parsed = callouts.parse_callout(txt)
         if parsed:
             parsed["at"] = [_r(px, 2), _r(py, 2)]
             parsed["view"] = which_view(px, py)
+            tgt = leader_target(ti, px, py) if "leader" in (meta.get(ti) or {}) else None
+            if tgt:
+                parsed["target"] = tgt          # the circle/arc the leader points at (a link, not a value)
             hole_callouts.append(parsed)
     for d in dims:
         tol = callouts.parse_tolerance(d.get("text") or d.get("printed"))
@@ -1013,6 +1259,53 @@ def read_doc(doc, auditor, path, cfg, source_kind="dxf", layout=""):
                  "d": _r(2 * e.dxf.radius, 2), "c": edge_class(doc, e)}
                 for e, _b in (frame or []) if e.dxftype() == "CIRCLE"]
 
+    # ---- advisories: what this read could NOT settle by itself. Facts, never silent conversions.
+    # projection: the drawing states one method, the config is set to the other
+    if projection_detected and projection_detected != cfg.get("projection"):
+        advise("PROJECTION_MISMATCH", "the drawing states %s but config.projection is %s: that decides which "
+                                      "physical face a placed view shows (a wrong guess builds VALID but mirrored "
+                                      "geometry). Settle it with the user / config.json before placing views."
+               % (projection_detected, cfg.get("projection")))
+    # title-block scale text vs the factor the read applied
+    title_scale = None
+    if source_kind != "pdf" and frame_notes:
+        cands = []
+        for n in frame_notes:                    # reading order: the title block's own cell comes last
+            ab = None if callouts.is_view_label(n["text"]) else callouts.parse_scale(n["text"], require_key=True)
+            if ab:
+                cands.append((ab, n))
+        if not cands:
+            bare = [(callouts.parse_scale(n["text"]), n) for n in frame_notes
+                    if re.match(r"^\s*\d+(?:[.,]\d+)?\s*:\s*\d+(?:[.,]\d+)?\s*$", n["text"])]
+            bare = [c for c in bare if c[0]]
+            cands = bare if len(bare) == 1 else []
+        if cands:
+            (a, b), n = cands[-1]
+            tf = b / a
+            title_scale = {"text": n["text"], "factor": _r(tf, 6), "at": n["at"]}
+            if len({round(c[0][1] / c[0][0], 6) for c in cands}) > 1:
+                title_scale["candidates"] = [c[1]["text"] for c in cands]
+            if abs(tf - sheet_scale) > 0.005 * tf:
+                advise("SCALE_MISMATCH", "the title block says '%s' (true = paper x %g) but this read applied "
+                                         "scale_factor %g (the DIMLFAC of the dimstyles in use). Dimension VALUES come "
+                                         "from the DIMENSION entities and are not rescaled; check one printed "
+                                         "dimension against its geometry before trusting sizes."
+                       % (n["text"], tf, sheet_scale))
+    # unitless: kept as mm, never converted -- but the evidence is weighed and said out loud
+    units_hint = None
+    if raw_units in (None, 0):
+        units_hint = _units_hint(fb[2] - fb[0], fb[3] - fb[1], doc.header.get("$MEASUREMENT", None),
+                                 frame is not None)
+        advise("UNITS_UNSET", "$INSUNITS is %s (unitless): every length was read as MILLIMETRES, unconverted. %s "
+                              "If the drawing is really in inches every value is 25.4x too small; confirm with the "
+                              "user or a printed dimension before building." % (
+                                  "absent" if raw_units is None else "0",
+                                  ("Hint: %s." % units_hint["basis"]) if units_hint else "No evidence either way."))
+    if not out_views:
+        advise("ZERO_VIEWS", "no view could be built from this file's geometry (%d entities read, %d layout(s) with "
+                             "content): nothing to build from. Check layout=, the file's units, or open it and "
+                             "re-export." % (len(ents), len(with_content)))
+
     with open(path, "rb") as fh:
         digest = hashlib.sha256(fh.read()).hexdigest()
 
@@ -1025,7 +1318,8 @@ def read_doc(doc, auditor, path, cfg, source_kind="dxf", layout=""):
             "source": source_kind,
             "projection_detected": projection_detected,
             "layouts": layout_info,
-            **({"layout_selected": layout} if layout else {}),
+            **({"layout_selected": layout} if layout and not merge_all else {}),
+            **({"layout_auto": layout_auto} if layout_auto else {}),
             "dxf_version": getattr(doc, "dxfversion", None),
             "units": doc.header.get("$INSUNITS", None),
             "units_mm_per_unit": native_mm,    # what $INSUNITS says one drawing unit is (None = unknown code)
@@ -1036,7 +1330,13 @@ def read_doc(doc, auditor, path, cfg, source_kind="dxf", layout=""):
             # entity classes seen and NOT emitted (block text IS read; block geometry is not)
             "not_read": {**{k: not_read[k] for k in sorted(not_read)},
                          **({"INSERT": {k: block_geom[k] for k in sorted(block_geom)}}
-                            if block_geom else {})},
+                            if block_geom else {}),
+                         **({"INSERT_CONTENT": {k: block_unread[k] for k in sorted(block_unread)}}
+                            if block_unread else {})},
+            **({"title_scale": title_scale} if title_scale else {}),
+            **({"title_fields": title_fields} if title_fields else {}),
+            **({"units_hint": units_hint} if units_hint else {}),
+            **({"advisories": advisories} if advisories else {}),
         },
         "frame": {
             # paper_box None = NO border/title block on this sheet (nothing contained the other

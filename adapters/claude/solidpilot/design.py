@@ -629,23 +629,91 @@ def build_graph(graph_obj, fresh_document, kind="graph", source=None, label=""):
 
 
 # ---------------------------------------------------------------------------
+# Verification records (what the compare/verify tools found at a step)
+# ---------------------------------------------------------------------------
+_MAX_RECORDS = 20
+_IOU_SAME = 0.002                      # IoU moves smaller than this are noise, not a trend
+
+
+def record_verification(design, summary: dict):
+    """Append a verification summary (JSON-safe dict) to the LIVE snapshot's `verification` list and persist.
+    Records belong to the step they were taken at: undo/redo/step never move or edit them. A missing design or
+    an unserialisable summary is ignored (a check must not fail because it could not be recorded)."""
+    if design is None or not isinstance(summary, dict):
+        return None
+    try:
+        rec = json.loads(json.dumps(summary, default=str))
+    except (TypeError, ValueError):
+        return None
+    rec["at"] = _now()
+    with _lock:
+        recs = design.live().setdefault("verification", [])
+        recs.append(rec)
+        del recs[:-_MAX_RECORDS]
+    save(design)
+    return rec
+
+
+def verification_score(snapshot) -> dict:
+    """{'iou': {view: latest IoU}, 'failed': n | None} from a snapshot's records ({} when it has none)."""
+    ious, failed = {}, None
+    for rec in snapshot.get("verification") or []:
+        if isinstance(rec.get("iou"), (int, float)) and rec.get("view"):
+            ious[rec["view"]] = rec["iou"]
+        for view, v in (rec.get("ious") or {}).items():
+            if isinstance(v, (int, float)):
+                ious[view] = v
+        if isinstance(rec.get("failed"), int):
+            failed = rec["failed"]
+    return {"iou": ious, "failed": failed} if ious or failed is not None else {}
+
+
+def verification_trend(now: dict, before: dict):
+    """(label, detail) comparing two scores: mean IoU over the views both have, else the FAIL count."""
+    common = sorted(set(now.get("iou") or {}) & set(before.get("iou") or {}))
+    if common:
+        d = sum(now["iou"][v] - before["iou"][v] for v in common) / len(common)
+        return ("same" if abs(d) < _IOU_SAME else "improved" if d > 0 else "worse"), "IoU %+.3f" % d
+    if now.get("failed") is not None and before.get("failed") is not None:
+        d = now["failed"] - before["failed"]
+        return ("same" if d == 0 else "improved" if d < 0 else "worse"), "FAIL rows %+d" % d
+    return None, ""
+
+
+# ---------------------------------------------------------------------------
 # History (read-only)
 # ---------------------------------------------------------------------------
 def history_text(design) -> str:
     lines = ["DESIGN %s | %s %r%s | head=%d/%d" % (design.design_id, design.kind, design.doc_title,
                                                   (" | " + design.label) if design.label else "",
                                                   design.head, design.total)]
+    prev = None                                   # (step, score) of the nearest earlier step that was checked
+    worse_than = None
     for s in design.snapshots:
         mark = ">" if s["step"] == design.head else " "
         undone = "  [undone - design_redo restores it]" if s["step"] > design.head else ""
         what = patch_summary(s.get("patch")) if s["step"] else "document as found (%d existing features)" % design.base_count
         lines.append("%s %2d  %s  (%s; %d nodes)%s" % (mark, s["step"], s.get("label") or "", what,
                                                       len(s["nodes"]), undone))
+        score = verification_score(s)
+        if score:
+            bits = ["%s IoU %.3f" % (v, i) for v, i in sorted(score["iou"].items())]
+            if score["failed"] is not None:
+                bits.append("%d check FAIL" % score["failed"])
+            label, detail = verification_trend(score, prev[1]) if prev else (None, "")
+            lines.append("       checked: %s%s" % (", ".join(bits), ("  [%s vs step %d: %s]" % (label, prev[0], detail))
+                                                    if label else ""))
+            if s["step"] == design.head and label == "worse":
+                worse_than = prev[0]
+            prev = (s["step"], score)
     live = design.live()
     lines.append("current nodes: " + (", ".join("%s(%s)" % (n.get("id"), n.get("type")) for n in live["nodes"])
                                       or "none"))
     if live.get("material"):
         lines.append("material: %s" % json.dumps(live["material"]))
+    if worse_than is not None:
+        lines.append("the latest check is WORSE than step %d: design_undo back to it unless the step was a needed "
+                     "trade-off" % worse_than)
     if design.head < design.total:
         lines.append("redo available: %d step(s)" % (design.total - design.head))
     lines.append(_tail(design))
